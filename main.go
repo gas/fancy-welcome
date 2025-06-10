@@ -2,6 +2,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -9,13 +10,16 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-isatty" // Importamos la nueva librería
+    // Asegúrate de que las rutas de importación coincidan con tu módulo
 	"github.com/gas/fancy-welcome/blocks/shell_command"
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
 	"github.com/gas/fancy-welcome/themes"
 )
 
-// blockFactory es un mapa que relaciona un 'type' de bloque con su función constructora.
+// --- El código del modo interactivo (Bubble Tea) permanece igual ---
+
 var blockFactory = map[string]func() block.Block{
 	"ShellCommand": shell_command.New,
 }
@@ -28,7 +32,6 @@ type model struct {
 
 func (m *model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	// Al iniciar, pedimos a cada bloque que se actualice.
 	for _, b := range m.blocks {
 		cmds = append(cmds, b.Update())
 	}
@@ -41,18 +44,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
-
 	case tea.KeyMsg:
 		if msg.String() == "q" || msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-	
-	// Si el mensaje es de datos, lo pasamos al bloque correspondiente para que lo maneje.
-    // Esta es una simplificación, una implementación más robusta necesitaría saber a qué bloque
-    // pertenece el mensaje. Por ahora, se lo pasamos a todos.
 	default:
 		for _, b := range m.blocks {
-			// Un truco para que los bloques puedan manejar sus propios mensajes
 			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
 				handler.HandleMsg(msg)
 			}
@@ -69,40 +66,45 @@ func (m *model) View() string {
 	return strings.Join(renderedBlocks, "\n\n")
 }
 
-func main() {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		log.Fatalf("Error cargando config: %v", err)
-	}
+// --- La nueva lógica principal en main() ---
 
-	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
-	if err != nil {
-		log.Fatalf("Error cargando tema: %v", err)
+func main() {
+	// 1. Definir y parsear los argumentos de línea de comandos
+	simpleOutput := flag.Bool("simple", false, "Muestra la salida como texto plano sin TUI.")
+	flag.Parse()
+
+	// 2. Comprobar si debemos usar el modo simple
+	// Se activa si la salida no es una terminal (ej. un pipe) O si se usa el flag --simple.
+	isPipe := !isatty.IsTerminal(os.Stdout.Fd())
+	if isPipe || *simpleOutput {
+		runSimpleMode()
+	} else {
+		runInteractiveMode()
 	}
+}
+
+// runInteractiveMode contiene toda la lógica de Bubble Tea que teníamos antes.
+func runInteractiveMode() {
+	cfg, err := config.LoadConfig()
+	if err != nil { log.Fatalf("Error cargando config: %v", err) }
+	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
+	if err != nil { log.Fatalf("Error cargando tema: %v", err) }
 	baseStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(theme.Colors.Background)).
 		Foreground(lipgloss.Color(theme.Colors.Text))
 
 	var activeBlocks []block.Block
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
-		blockConfig, ok := cfg.Blocks[blockName].(map[string]interface{})
-		if !ok {
-			log.Printf("Advertencia: config del bloque '%s' no encontrada o inválida.", blockName)
-			continue
-		}
-		
+		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
-			blockConfig["name"] = blockName // Inyectamos el nombre en la config
-			err := b.Init(blockConfig, baseStyle.Copy())
-			if err != nil {
+			blockConfig["name"] = blockName
+			if err := b.Init(blockConfig, baseStyle.Copy()); err != nil {
 				log.Printf("Error inicializando bloque '%s': %v", blockName, err)
 				continue
 			}
 			activeBlocks = append(activeBlocks, b)
-		} else {
-			log.Printf("Advertencia: tipo de bloque '%s' desconocido.", blockType)
 		}
 	}
 	
@@ -111,5 +113,47 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error ejecutando el programa: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// runSimpleMode es la nueva función para la salida de texto plano.
+func runSimpleMode() {
+	cfg, err := config.LoadConfig()
+	if err != nil { log.Fatalf("Error cargando config: %v", err) }
+
+	// En modo simple no necesitamos temas visuales.
+	// Creamos los bloques sin estilo.
+	var activeBlocks []block.Block
+	for _, blockName := range cfg.General.EnabledBlocksOrder {
+		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
+		blockType, _ := blockConfig["type"].(string)
+		if factory, ok := blockFactory[blockType]; ok {
+			b := factory()
+			blockConfig["name"] = blockName
+			// Pasamos un estilo vacío que no hará nada.
+			if err := b.Init(blockConfig, lipgloss.NewStyle()); err != nil {
+				continue
+			}
+			activeBlocks = append(activeBlocks, b)
+		}
+	}
+
+	// 3. Ejecutar los bloques de forma síncrona
+	for _, b := range activeBlocks {
+		cmd := b.Update()
+		if cmd == nil {
+			continue
+		}
+		// Ejecutamos el comando y obtenemos el mensaje directamente.
+		msg := cmd()
+		
+		// Pasamos el mensaje al bloque para que actualice su estado interno.
+		if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
+			handler.HandleMsg(msg)
+		}
+
+		// Imprimimos la vista del bloque directamente a la consola.
+		fmt.Println(b.View())
+		fmt.Println("---") // Añadimos un separador simple
 	}
 }
