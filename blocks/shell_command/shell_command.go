@@ -24,11 +24,20 @@ var registeredParsers = make(map[string]parsers.Parser)
 var registeredRenderers = make(map[string]renderers.Renderer)
 
 func init() {
+	// Register Parsers
 	registeredParsers["single_line"] = &parsers.SingleLineParser{}
 	registeredParsers["multi_line"] = &parsers.MultiLineParser{}
+	registeredParsers["app_count"] = &parsers.AppCountParser{}
+	registeredParsers["dev_versions"] = &parsers.DevVersionsParser{}
+	registeredParsers["journald_errors"] = &parsers.JournaldErrorsParser{}
+	registeredParsers["key_value"] = &parsers.KeyValueParser{}
 	
+	// Register Renderers
 	registeredRenderers["raw_text"] = &renderers.RawTextRenderer{}
 	registeredRenderers["cowsay"] = &renderers.CowsayRenderer{}
+	registeredRenderers["table"] = &renderers.TableRenderer{}
+	registeredRenderers["gauge"] = &renderers.GaugeRenderer{}
+	registeredRenderers["list"] = &renderers.ListRenderer{}
 }
 
 // Nuevo struct para guardar en el archivo de caché
@@ -51,6 +60,7 @@ type ShellCommandBlock struct {
     cacheDuration time.Duration
     isLoading bool
     spinner   spinner.Model
+    width 	int
 }
 
 // CORRECCIÓN 2: Añadir 'blockID' al mensaje para saber a quién pertenece.
@@ -62,6 +72,10 @@ type dataMsg struct {
 
 func New() block.Block {
 	return &ShellCommandBlock{}
+}
+
+func (b *ShellCommandBlock) SetWidth(width int) {
+	b.width = width
 }
 
 func (b *ShellCommandBlock) Name() string {
@@ -79,11 +93,15 @@ func (b *ShellCommandBlock) Init(config map[string]interface{}, style lipgloss.S
 	b.style = style
 
 	cmdRaw, _ := config["command"].(string)
-	if cmdRaw == "" {
-		return fmt.Errorf("el campo 'command' es obligatorio para el bloque '%s'", b.id)
-	}
+	//if cmdRaw == "" {
+		// Algunos parsers como app_count no necesitan un comando, así que esto ya no es un error fatal.
+		// return fmt.Errorf("el campo 'command' es obligatorio para el bloque '%s'", b.id)
+	//}
+	
 	parts := strings.Fields(cmdRaw)
-	b.command = parts[0]
+	if len(parts) > 0 {
+		b.command = parts[0]
+	}
 	if len(parts) > 1 {
 		b.args = parts[1:]
 	}
@@ -103,7 +121,7 @@ func (b *ShellCommandBlock) Init(config map[string]interface{}, style lipgloss.S
 	b.renderer = r
 
     // Leer la duración de la caché en segundos
-    if cacheSecs, ok := config["cache_duration_seconds"].(int64); ok {
+    if cacheSecs, ok := config["cache_duration_seconds"].(float64); ok { //antes int64?
         b.cacheDuration = time.Duration(cacheSecs) * time.Second
     } else {
         // Valor por defecto si no se especifica (ej. 10 minutos)
@@ -127,8 +145,13 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 		if json.Unmarshal(bytes, &entry) == nil {
 			// Si el parseo JSON es exitoso y el timestamp es válido...
 			if time.Since(entry.Timestamp) < b.cacheDuration {
-				b.parsedData = entry.ParsedData // ¡Cargamos desde la caché!
-				return nil                      // Y no hacemos nada más.
+				// Cargar desde la caché y parsear de nuevo por si la estructura cambió
+				// b.parsedData, _ = b.parser.Parse(fmt.Sprintf("%v", entry.ParsedData))
+				//return nil                      // Y no hacemos nada más.
+				return func() tea.Msg {
+					// Even with cache, send a dataMsg so the spinner stops
+					return dataMsg{blockID: b.id, data: entry.ParsedData, err: nil}
+				}
 			}
 		}
 	}
@@ -136,11 +159,18 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
     b.isLoading = true // Activar el spinner
 	// Si la caché ha expirado, procede con la ejecución normal
 	return func() tea.Msg {
-		cmd := exec.Command(b.command, b.args...)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-            // CORRECCIÓN 4 (Parte A): Incluimos el ID en el mensaje de error.
-			return dataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución del comando: %w", err)}
+		var output []byte
+		var err error
+
+		// Algunos parsers (app_count, dev_versions) ignoran el comando y la entrada
+		// Para ellos, el comando puede estar vacío.
+		if b.command != "" {
+			cmd := exec.Command(b.command, b.args...)
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				// CORRECCIÓN 4 (Parte A): Incluimos el ID en el mensaje de error.
+				return dataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución del comando: %w", err)}
+			}
 		}
 
 		parsedData, err := b.parser.Parse(string(output))
@@ -172,11 +202,11 @@ func (b *ShellCommandBlock) View() string {
 
 	// Si no hay datos (y no está cargando), devuelve un string vacío.
 	if b.parsedData == nil {
-		return ""
+		return b.style.Render("...") // Show ellipsis instead of nothing	
 	}
 
 	// Si todo está bien, renderiza los datos.
-	return b.renderer.Render(b.parsedData, 0, b.style)
+	return b.renderer.Render(b.parsedData, b.width, b.style)
 }
 
 // getCacheFilePath es una función helper para obtener la ruta del archivo de caché.
@@ -189,14 +219,15 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
     // CORRECCIÓN 5: Comprobamos si el mensaje es un dataMsg Y si su ID coincide con el nuestro.
 	if m, ok := msg.(dataMsg); ok && m.blockID == b.id {
         b.isLoading = false // Desactivar el spinner
-		b.parsedData = m.data
+		//b.parsedData = m.data
 		b.currentError = m.err
 
-		// Si la actualización fue exitosa, escribimos en la caché.
+		// En caso de éxito, actualizamos los datos y la caché
 		if m.err == nil {
+			b.parsedData = m.data
 			entry := cacheEntry{
 				Timestamp:  time.Now(),
-				ParsedData: m.data,
+				ParsedData: m.data, // Guardamos los datos parseados directamente
 			}
 			bytes, err := json.Marshal(entry)
 			if err == nil {

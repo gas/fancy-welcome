@@ -39,3 +39,21 @@ title_foreground = "#ECEFF4"
 gauge_full = "#A3BE8C"
 # Color de la parte "vacía" de una barra de progreso o medidor.
 gauge_empty = "#4C566A"
+
+###############
+## indicadores
+###############
+
+[indicators]
+  [indicators.spinner]
+  frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  color = "#88C0D0" # Color primario
+
+  [indicators.dots]
+  frames = [".  ", ".. ", "...", " ..", "  .", "   "]
+  color = "#EBCB8B" # Color de advertencia
+
+  [indicators.bar]
+  full_char = "█"
+  empty_char = "░"
+  color = "#A3BE8C" # Color de éxito
