@@ -5,71 +5,109 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-    // Asegúrate de que la ruta de importación coincida con tu módulo de Go
+	"github.com/gas/fancy-welcome/blocks/shell_command"
 	"github.com/gas/fancy-welcome/config"
+	"github.com/gas/fancy-welcome/shared/block"
 	"github.com/gas/fancy-welcome/themes"
 )
 
+// blockFactory es un mapa que relaciona un 'type' de bloque con su función constructora.
+var blockFactory = map[string]func() block.Block{
+	"ShellCommand": shell_command.New,
+}
+
 type model struct {
-	message string
-	style   lipgloss.Style
+	blocks []block.Block
+	width  int
+	height int
 }
 
-func initialModel(cfg *config.Config, theme *themes.Theme) model {
-	// Extraer el mensaje del bloque 'hello' que definimos en el TOML
-	helloBlockConfig, _ := cfg.Blocks["hello"].(map[string]interface{})
-	message, _ := helloBlockConfig["message"].(string)
-
-	// Crear un estilo usando los colores del tema cargado
-	style := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color(theme.Colors.Primary)).
-		Background(lipgloss.Color(theme.Colors.Background)).
-		Padding(2)
-
-	return model{
-		message: message,
-		style:   style,
+func (m *model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	// Al iniciar, pedimos a cada bloque que se actualice.
+	for _, b := range m.blocks {
+		cmds = append(cmds, b.Update())
 	}
+	return tea.Batch(cmds...)
 }
 
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "q" || msg.String() == "ctrl+c" {
 			return m, tea.Quit
+		}
+	
+	// Si el mensaje es de datos, lo pasamos al bloque correspondiente para que lo maneje.
+    // Esta es una simplificación, una implementación más robusta necesitaría saber a qué bloque
+    // pertenece el mensaje. Por ahora, se lo pasamos a todos.
+	default:
+		for _, b := range m.blocks {
+			// Un truco para que los bloques puedan manejar sus propios mensajes
+			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
+				handler.HandleMsg(msg)
+			}
 		}
 	}
 	return m, nil
 }
 
-func (m model) View() string {
-	return m.style.Render(m.message)
+func (m *model) View() string {
+	var renderedBlocks []string
+	for _, b := range m.blocks {
+		renderedBlocks = append(renderedBlocks, b.View())
+	}
+	return strings.Join(renderedBlocks, "\n\n")
 }
 
 func main() {
-	// Cargar configuración
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Error cargando la configuración: %v", err)
+		log.Fatalf("Error cargando config: %v", err)
 	}
 
-	// Cargar tema
 	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
 	if err != nil {
-		log.Fatalf("Error cargando el tema: %v", err)
+		log.Fatalf("Error cargando tema: %v", err)
 	}
+	baseStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(theme.Colors.Background)).
+		Foreground(lipgloss.Color(theme.Colors.Text))
 
-	// Iniciar la aplicación Bubble Tea
-	p := tea.NewProgram(initialModel(cfg, theme))
+	var activeBlocks []block.Block
+	for _, blockName := range cfg.General.EnabledBlocksOrder {
+		blockConfig, ok := cfg.Blocks[blockName].(map[string]interface{})
+		if !ok {
+			log.Printf("Advertencia: config del bloque '%s' no encontrada o inválida.", blockName)
+			continue
+		}
+		
+		blockType, _ := blockConfig["type"].(string)
+		if factory, ok := blockFactory[blockType]; ok {
+			b := factory()
+			blockConfig["name"] = blockName // Inyectamos el nombre en la config
+			err := b.Init(blockConfig, baseStyle.Copy())
+			if err != nil {
+				log.Printf("Error inicializando bloque '%s': %v", blockName, err)
+				continue
+			}
+			activeBlocks = append(activeBlocks, b)
+		} else {
+			log.Printf("Advertencia: tipo de bloque '%s' desconocido.", blockType)
+		}
+	}
+	
+	m := &model{blocks: activeBlocks}
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error ejecutando el programa: %v\n", err)
 		os.Exit(1)
