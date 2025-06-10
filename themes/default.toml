@@ -1,0 +1,41 @@
+# themes/default.toml
+
+# Metadatos básicos del tema.
+# El 'name' es útil para identificación interna o futura selección en la UI.
+name = "Default Dark"
+
+# La sección [colors] define la paleta de colores principal.
+# Cada clave representa un rol semántico dentro de la TUI.
+[colors]
+
+# --- Colores Base ---
+# Color para el fondo general de la aplicación.
+background = "#2E3440"
+# Color para el texto estándar sobre el fondo.
+text = "#ECEFF4"
+
+# --- Colores de Acento y Estado ---
+# Color primario, usado para elementos importantes o activos (ej. títulos, elementos seleccionados).
+primary = "#88C0D0"
+# Color secundario, para información menos crítica pero aún destacada.
+secondary = "#8FBCBB"
+# Color para mensajes de error o estados fallidos.
+error = "#BF616A"
+# Color para mensajes de éxito o estados correctos.
+success = "#A3BE8C"
+# Color para advertencias.
+warning = "#EBCB8B"
+
+# --- Colores de Componentes Específicos ---
+# Color del borde de los paneles o bloques.
+border = "#4C566A"
+# Color de fondo para las barras de título de los bloques.
+title_background = "#434C5E"
+# Color de texto para las barras de título de los bloques.
+title_foreground = "#ECEFF4"
+
+# --- Colores para "Gráficos" en la TUI (ej. para el bloque de CPU/RAM) ---
+# Color de la parte "llena" de una barra de progreso o medidor.
+gauge_full = "#A3BE8C"
+# Color de la parte "vacía" de una barra de progreso o medidor.
+gauge_empty = "#4C566A"
