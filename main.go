@@ -10,8 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-isatty" // Importamos la nueva librería
-    // Asegúrate de que las rutas de importación coincidan con tu módulo
+	"github.com/mattn/go-isatty"
 	"github.com/gas/fancy-welcome/blocks/shell_command"
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
@@ -77,14 +76,14 @@ func main() {
 	// Se activa si la salida no es una terminal (ej. un pipe) O si se usa el flag --simple.
 	isPipe := !isatty.IsTerminal(os.Stdout.Fd())
 	if isPipe || *simpleOutput {
-		runSimpleMode()
+		runTtyMode()
 	} else {
-		runInteractiveMode()
+		runTuiMode()
 	}
 }
 
 // runInteractiveMode contiene toda la lógica de Bubble Tea que teníamos antes.
-func runInteractiveMode() {
+func runTuiMode() {
 	cfg, err := config.LoadConfig()
 	if err != nil { log.Fatalf("Error cargando config: %v", err) }
 	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
@@ -96,6 +95,16 @@ func runInteractiveMode() {
 	var activeBlocks []block.Block
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
 		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
+		
+		runMode, _ := blockConfig["run_mode"].(string)
+		if runMode == "" {
+			runMode = "all"
+		}
+		// Si el bloque está configurado para ejecutarse solo en modo 'tty', saltamos.
+		if runMode == "tty" {
+			continue
+		}
+
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
@@ -117,7 +126,7 @@ func runInteractiveMode() {
 }
 
 // runSimpleMode es la nueva función para la salida de texto plano.
-func runSimpleMode() {
+func runTtyMode() {
 	cfg, err := config.LoadConfig()
 	if err != nil { log.Fatalf("Error cargando config: %v", err) }
 
@@ -126,6 +135,16 @@ func runSimpleMode() {
 	var activeBlocks []block.Block
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
 		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
+		
+		runMode, _ := blockConfig["run_mode"].(string)
+		if runMode == "" {
+			runMode = "all"
+		}
+		// Si el bloque está configurado para ejecutarse solo en modo 'tui', saltamos.
+		if runMode == "tui" {
+			continue
+		}
+
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
