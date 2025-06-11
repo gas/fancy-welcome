@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	//"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
@@ -92,19 +92,19 @@ func (b *ShellCommandBlock) Init(config map[string]interface{}, style lipgloss.S
 	b.id = config["name"].(string) 
 	b.style = style
 
-	cmdRaw, _ := config["command"].(string)
-	//if cmdRaw == "" {
-		// Algunos parsers como app_count no necesitan un comando, así que esto ya no es un error fatal.
-		// return fmt.Errorf("el campo 'command' es obligatorio para el bloque '%s'", b.id)
-	//}
-	
-	parts := strings.Fields(cmdRaw)
-	if len(parts) > 0 {
-		b.command = parts[0]
+	// --- LÓGICA MODIFICADA ---
+	// Lee el comando como un string simple.
+	b.command, _ = config["command"].(string)
+
+	// Lee los argumentos como un array de strings.
+	if argsInterface, ok := config["args"].([]interface{}); ok {
+		b.args = make([]string, len(argsInterface))
+		for i, v := range argsInterface {
+			b.args[i] = fmt.Sprintf("%v", v)
+		}
 	}
-	if len(parts) > 1 {
-		b.args = parts[1:]
-	}
+
+	// añadir soporte pipes y desvío 2>1 a otros bloques?
 
 	parserName, _ := config["parser"].(string)
 	p, ok := registeredParsers[parserName]
