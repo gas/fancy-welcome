@@ -21,6 +21,7 @@ import (
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
 	"github.com/gas/fancy-welcome/themes"
+	"github.com/gas/fancy-welcome/logging"
 )
 
 // --- El código del modo interactivo (Bubble Tea) permanece igual ---
@@ -28,6 +29,13 @@ import (
 var blockFactory = map[string]func() block.Block{
 	"ShellCommand": shell_command.New,
 	"SystemInfo":   system_info.New,
+}
+
+func periodicUpdate() tea.Cmd {
+	// El tick global ahora es más rápido, la lógica de frecuencia está en cada bloque.
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return periodicUpdateMsg(t)
+	})
 }
 
 type model struct {
@@ -40,17 +48,13 @@ type model struct {
     focusIndex  int    // Índice del bloque que tiene el foco	
 }
 
+
 // Helper para obtener la ruta del archivo de caché (duplicado de shell_command para uso en main)
 func getCacheFilePath(blockName string) string {
     homeDir, _ := os.UserHomeDir()
     return filepath.Join(homeDir, ".cache", "fancy-welcome", fmt.Sprintf("%s.json", blockName))
 }
 
-func periodicUpdate() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		return periodicUpdateMsg(t)
-	})
-}
 
 type periodicUpdateMsg time.Time
 
@@ -111,6 +115,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case periodicUpdateMsg:
+		// LOGGING: Añadimos esta línea para ver cada tick en el log.
+		logging.Log.Println("\n--- Periodic Update Tick Received ---")
+	
 		for _, b := range m.blocks {
 			// This will trigger an update, which will be ignored if cache is still valid
 			cmds = append(cmds, b.Update())
@@ -203,6 +210,15 @@ func (m *model) View() string {
 // --- La nueva lógica principal en main() ---
 
 func main() {
+	// Inicializamos el logger al principio de todo.
+	logFile, err := logging.Init()
+	if err != nil {
+		// Si no podemos crear el log, al menos lo notificamos por la consola.
+		log.Fatalf("Failed to initialize logging: %v", err)
+	}
+	// Nos aseguramos de que el archivo de log se cierre al salir de la aplicación.
+	defer logFile.Close()
+
 	// 1. Definir y parsear los argumentos de línea de comandos
 	simpleOutput := flag.Bool("simple", false, "Muestra la salida como texto plano sin TUI.")
 	refreshFlag := flag.String("refresh", "", "Forzar el refresco de un bloque específico o 'all' para todos.")
@@ -244,6 +260,7 @@ func runTuiMode(refreshTarget string) {
 
 	var activeBlocks []block.Block
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
+
 		// Forzar refresco si es el objetivo
 		if refreshTarget == "all" || refreshTarget == blockName {
 			cacheFile := getCacheFilePath(blockName)
@@ -260,7 +277,7 @@ func runTuiMode(refreshTarget string) {
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
 			blockConfig["name"] = blockName
-			if err := b.Init(blockConfig, baseStyle.Copy()); err != nil {
+			if err := b.Init(blockConfig, cfg.General, baseStyle.Copy()); err != nil {
 				log.Printf("Error inicializando bloque '%s': %v", blockName, err)
 				continue
 			}
@@ -289,17 +306,21 @@ func runTuiMode(refreshTarget string) {
 func runTtyMode(refreshTarget string) {
 	//config
 	cfg, err := config.LoadConfig()
-	if err != nil { log.Fatalf("Error cargando config: %v", err) }
+	if err != nil { 
+		logging.Log.Fatalf("Error cargando config: %v", err) 
+	}
 
 	//cache
 	homeDir, err := os.UserHomeDir()
-	if err != nil { log.Fatalf("Error obteniendo home dir: %v", err) }
+	if err != nil { 
+		logging.Log.Fatalf("Error obteniendo home dir: %v", err)
+	}
 	cacheDir := filepath.Join(homeDir, ".cache", "fancy-welcome")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-	    log.Fatalf("Error creando directorio de caché: %v", err)
+	    logging.Log.Fatalf("Error creando directorio de caché: %v", err)
 	}
 
-	// En modo simple no necesitamos temas visuales.
+	// En modo tty no necesitamos temas visuales.
 	// Creamos los bloques sin estilo.
 	var activeBlocks []block.Block
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
@@ -310,18 +331,24 @@ func runTtyMode(refreshTarget string) {
 		}
 
 		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
-		
 		runMode, _ := blockConfig["run_mode"].(string)
-		if runMode == "" { runMode = "all" }
+		if runMode == "" { 
+			runMode = "all" 
+		}
 		// Si el bloque está configurado para ejecutarse solo en modo 'tui', saltamos.
-		if runMode == "tui" { continue }
+		if runMode == "tui" { 
+			continue 
+		}
 
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
 			blockConfig["name"] = blockName
-			// Pasamos un estilo vacío que no hará nada.
-			if err := b.Init(blockConfig, lipgloss.NewStyle()); err != nil { continue }
+
+			if err := b.Init(blockConfig, cfg.General, lipgloss.NewStyle()); err != nil {
+				logging.Log.Printf("Error inicializando bloque '%s': %v", blockName, err)
+				continue
+			}
 			activeBlocks = append(activeBlocks, b)
 		}
 	}

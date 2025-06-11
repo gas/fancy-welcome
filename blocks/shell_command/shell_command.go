@@ -8,17 +8,33 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	//"strings"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/bubbles/spinner"
-
+	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/blocks/shell_command/parsers"
 	"github.com/gas/fancy-welcome/blocks/shell_command/renderers"
+	"github.com/gas/fancy-welcome/logging" // paquete de logging
 	"github.com/gas/fancy-welcome/shared/block"
 )
+
+
+// --- NUEVOS TIPOS DE MENSAJE ---
+// Mensaje para cuando los datos son nuevos (de un comando)
+type freshDataMsg struct {
+	blockID string
+	data    interface{}
+	err     error
+}
+// Mensaje para cuando los datos vienen de la caché
+type cachedDataMsg struct {
+	blockID string
+	data    interface{}
+	err     error
+}
 
 var registeredParsers = make(map[string]parsers.Parser)
 var registeredRenderers = make(map[string]renderers.Renderer)
@@ -48,19 +64,21 @@ type cacheEntry struct {
 
 // 1: Añadido el campo 'id' al struct del bloque.
 type ShellCommandBlock struct {
-	id           string // ID único del bloque
-	style        lipgloss.Style
-	command      string
-	args         []string
-	parser       parsers.Parser
-	renderer     renderers.Renderer
-	parsedData   interface{}
-	currentError error
+	id           	string // ID único del bloque
+	style        	lipgloss.Style
+	command      	string
+	// args      	[]string //ya no diferenciamos command y args, lo gestionamos internamente
+	parser       	parsers.Parser
+	renderer     	renderers.Renderer
+	parsedData   	interface{}
+	currentError 	error
     //lastUpdated   time.Time
-    cacheDuration time.Duration
-    isLoading bool
-    spinner   spinner.Model
-    width 	int
+    cacheDuration 	time.Duration // 0 significa que la caché está desactivada
+   	updateInterval 	time.Duration
+	lastUpdateTime 	time.Time
+    isLoading 		bool
+    spinner   		spinner.Model
+    width 			int
 }
 
 // CORRECCIÓN 2: Añadir 'blockID' al mensaje para saber a quién pertenece.
@@ -87,46 +105,54 @@ func (b *ShellCommandBlock) Spinner() *spinner.Model { return &b.spinner }
 
 func (b *ShellCommandBlock) SpinnerCmd() tea.Cmd { return b.spinner.Tick }
 
-func (b *ShellCommandBlock) Init(config map[string]interface{}, style lipgloss.Style) error {
-	// CORRECCIÓN 3: Guardamos el nombre único del bloque como su ID.
-	b.id = config["name"].(string) 
+func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, style lipgloss.Style) error {
+	// 1 --- Inicialización básica.
+	b.id = blockConfig["name"].(string)
 	b.style = style
+	logging.Log.Printf("[%s] Initializing block...", b.id)
 
-	// --- LÓGICA MODIFICADA ---
-	// Lee el comando como un string simple.
-	b.command, _ = config["command"].(string)
+	// 2. Lógica de comando menos enrevesada
+	b.command, _ = blockConfig["command"].(string)
+	logging.Log.Printf("[%s] Config loaded. Command: '%s'", b.id, b.command)	
 
-	// Lee los argumentos como un array de strings.
-	if argsInterface, ok := config["args"].([]interface{}); ok {
-		b.args = make([]string, len(argsInterface))
-		for i, v := range argsInterface {
-			b.args[i] = fmt.Sprintf("%v", v)
-		}
+	// 3. Lógica de Caché Simplificada
+	// Se busca la clave "cache". Si no existe o es 0, la caché se deshabilita (duration = 0).
+	if cacheSecs, ok := blockConfig["cache"].(float64); ok && cacheSecs > 0 {
+		b.cacheDuration = time.Duration(cacheSecs) * time.Second
+	} else {
+		b.cacheDuration = 0 // Caché desactivada por defecto si no se especifica o es 0
 	}
+	logging.Log.Printf("[%s] Cache duration set to %v", b.id, b.cacheDuration)
 
-	// añadir soporte pipes y desvío 2>1 a otros bloques?
+	// 4. Lógica de Tiempo de Actualización
+	// Se busca "update_seconds" en el bloque. Si no se encuentra, se usa el valor global.
+	var updateSecs float64
+	if secs, ok := blockConfig["update_seconds"].(float64); ok && secs > 0 {
+		updateSecs = secs
+	} else {
+		updateSecs = globalConfig.GlobalUpdateSeconds		
+	}
+	// Se establece un valor mínimo de 1 segundo para evitar bucles infinitos.
+	if updateSecs < 1 {
+		updateSecs = 1
+	}
+	b.updateInterval = time.Duration(updateSecs) * time.Second
+	logging.Log.Printf("[%s] Update interval set to %v", b.id, b.updateInterval)
 
-	parserName, _ := config["parser"].(string)
+	// --- 5. Inicialización de Parser y Renderer ---
+	parserName, _ := blockConfig["parser"].(string)
 	p, ok := registeredParsers[parserName]
 	if !ok {
 		return fmt.Errorf("parser '%s' no encontrado para el bloque '%s'", parserName, b.id)
 	}
 	b.parser = p
 
-	rendererName, _ := config["renderer"].(string)
+	rendererName, _ := blockConfig["renderer"].(string)
 	r, ok := registeredRenderers[rendererName]
 	if !ok {
 		return fmt.Errorf("renderer '%s' no encontrado para el bloque '%s'", rendererName, b.id)
 	}
 	b.renderer = r
-
-    // Leer la duración de la caché en segundos
-    if cacheSecs, ok := config["cache_duration_seconds"].(float64); ok { //antes int64?
-        b.cacheDuration = time.Duration(cacheSecs) * time.Second
-    } else {
-        // Valor por defecto si no se especifica (ej. 10 minutos)
-        b.cacheDuration = 10 * time.Minute
-    }
 
     b.spinner = spinner.New()
     // Podemos estilizar el spinner usando los colores del tema
@@ -136,51 +162,75 @@ func (b *ShellCommandBlock) Init(config map[string]interface{}, style lipgloss.S
 }
 
 func (b *ShellCommandBlock) Update() tea.Cmd {
-	cachePath := b.getCacheFilePath()
-	file, err := os.Open(cachePath)
-	if err == nil { // Si el archivo de caché existe
-		defer file.Close()
-		bytes, _ := io.ReadAll(file)
-		var entry cacheEntry
-		if json.Unmarshal(bytes, &entry) == nil {
-			// Si el parseo JSON es exitoso y el timestamp es válido...
-			if time.Since(entry.Timestamp) < b.cacheDuration {
-				// Cargar desde la caché y parsear de nuevo por si la estructura cambió
-				// b.parsedData, _ = b.parser.Parse(fmt.Sprintf("%v", entry.ParsedData))
-				//return nil                      // Y no hacemos nada más.
-				return func() tea.Msg {
-					// Even with cache, send a dataMsg so the spinner stops
-					return dataMsg{blockID: b.id, data: entry.ParsedData, err: nil}
+	// Control de Frecuencia de Actualización (Limitador de frecuencia)
+	// Si no ha pasado suficiente tiempo según el 'update_seconds' del bloque, no se hace nada.
+	if time.Since(b.lastUpdateTime) < b.updateInterval {
+		return nil 
+	}
+
+	// Comprobación de Caché Simplificada
+	// Solo se intenta leer la caché si se ha definido una duración (cache > 0).
+	if b.cacheDuration > 0 {
+		cachePath := b.getCacheFilePath()
+		file, err := os.Open(cachePath)
+		if err == nil { // Si el archivo de caché existe
+			defer file.Close()
+			bytes, _ := io.ReadAll(file)
+			var entry cacheEntry
+			if json.Unmarshal(bytes, &entry) == nil {
+				// Si el parseo JSON es exitoso y el timestamp es válido...
+				if time.Since(entry.Timestamp) < b.cacheDuration {
+					// LOGGING: Registra que se ha encontrado una caché válida
+					logging.Log.Printf("[%s] CACHE HIT. Data is fresh.", b.id)
+					// Se devuelve un mensaje para notificar que se usarán datos de la caché
+					return func() tea.Msg {
+						return cachedDataMsg{blockID: b.id, data: entry.ParsedData, err: nil}
+					}
 				}
 			}
 		}
 	}
 
-    b.isLoading = true // Activar el spinner
+	// Si la caché está desactivada (cache=0 o no definido) O si está activada pero ha expirado,
+	// se considera un CACHE MISS y se procede a ejecutar el comando.
+	logging.Log.Printf("[%s] CACHE MISS or disabled. Preparing to execute command.", b.id)
+   	b.isLoading = true // Activar el spinner
+
 	// Si la caché ha expirado, procede con la ejecución normal
 	return func() tea.Msg {
 		var output []byte
 		var err error
 
-		// Algunos parsers (app_count, dev_versions) ignoran el comando y la entrada
-		// Para ellos, el comando puede estar vacío.
+		// Ejecución de Comando Simplificada
+		// Se usa 'sh -c' para permitir tuberías y otras operaciones de shell directamente.
 		if b.command != "" {
-			cmd := exec.Command(b.command, b.args...)
+			logging.Log.Printf("[%s] Executing command: sh -c \"%s\"", b.id, b.command)
+			cmd := exec.Command("sh", "-c", b.command)
 			output, err = cmd.CombinedOutput()
 			if err != nil {
-				// CORRECCIÓN 4 (Parte A): Incluimos el ID en el mensaje de error.
-				return dataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución del comando: %w", err)}
+				logging.Log.Printf("[%s] EXECUTION ERROR: %v. Output: %s", b.id, err, string(output))
+				return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución del comando: %w", err)}
 			}
+			// LOGGING: Registra la salida cruda del comando
+			logging.Log.Printf("[%s] Raw command output: %s", b.id, strings.TrimSpace(string(output)))
+		} else {
+			// Esto es para parsers como app_count que no necesitan un comando externo
+			logging.Log.Printf("[%s] No command to execute. Proceeding with parser.", b.id)
 		}
 
+		// Se parsea la salida del comando
 		parsedData, err := b.parser.Parse(string(output))
 		if err != nil {
-            // CORRECCIÓN 4 (Parte B): Incluimos el ID en el mensaje de error.
-			return dataMsg{blockID: b.id, err: fmt.Errorf("falló el parseo: %w", err)}
+			// LOGGING: Registra un error en el parseo
+			logging.Log.Printf("[%s] PARSING ERROR: %v", b.id, err)			
+            // Incluimos el ID en el mensaje de error.
+			return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló el parseo: %w", err)}
 		}
 		
-        // CORRECCIÓN 4 (Parte C): Incluimos el ID en el mensaje de éxito.
-		return dataMsg{blockID: b.id, data: parsedData}
+		// LOGGING: Registra que el parseo fue exitoso
+		logging.Log.Printf("[%s] Parsing successful.", b.id)
+	    // Incluimos el ID en el mensaje de éxito.
+		return freshDataMsg{blockID: b.id, data: parsedData}
 	}
 }
 
@@ -216,22 +266,49 @@ func (b *ShellCommandBlock) getCacheFilePath() string {
 }
 
 func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
-    // CORRECCIÓN 5: Comprobamos si el mensaje es un dataMsg Y si su ID coincide con el nuestro.
-	if m, ok := msg.(dataMsg); ok && m.blockID == b.id {
-        b.isLoading = false // Desactivar el spinner
-		//b.parsedData = m.data
-		b.currentError = m.err
+	// La lógica de HandleMsg se actualiza para guardar el tiempo de la última actualización
+	handleCompletion := func() {
+		b.isLoading = false
+		b.lastUpdateTime = time.Now()
+	}
 
-		// En caso de éxito, actualizamos los datos y la caché
-		if m.err == nil {
-			b.parsedData = m.data
-			entry := cacheEntry{
-				Timestamp:  time.Now(),
-				ParsedData: m.data, // Guardamos los datos parseados directamente
+	// Usamos un switch para manejar los diferentes tipos de mensajes
+	switch m := msg.(type) {
+	// Caso para datos FRESCOS
+	case freshDataMsg:
+		if m.blockID == b.id {
+			// Llamamos a handleCompletion para registrar la hora y detener la carga.
+			handleCompletion() 
+
+			b.currentError = m.err
+			if m.err == nil {
+				b.parsedData = m.data
+				// Si la caché está activada, escribimos los nuevos datos.
+				if b.cacheDuration > 0 {
+					// Solo escribimos en la caché cuando los datos son frescos
+					entry := cacheEntry{
+						Timestamp:  time.Now(),
+						ParsedData: m.data,
+					}
+					bytes, err := json.Marshal(entry)
+					if err == nil {
+						logging.Log.Printf("[%s] Writing new data to cache file: %s", b.id, b.getCacheFilePath())
+						os.WriteFile(b.getCacheFilePath(), bytes, 0644)
+					}
+				}
 			}
-			bytes, err := json.Marshal(entry)
-			if err == nil {
-				os.WriteFile(b.getCacheFilePath(), bytes, 0644)
+		}
+	// Caso para datos de la CACHÉ
+	case cachedDataMsg:
+		if m.blockID == b.id {
+			// También llamamos a handleCompletion para registrar la hora de la actualización.
+			handleCompletion()
+
+			b.currentError = m.err
+			if m.err == nil {
+				b.parsedData = m.data
+				// NO escribimos en la caché aquí para no resetear el timestamp
+				logging.Log.Printf("[%s] Updated block with cached data.", b.id)
 			}
 		}
 	}

@@ -4,6 +4,7 @@ package block
 import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gas/fancy-welcome/config" // Importamos el paquete de config para uso particular
 )
 
 // Block es la interfaz que cada módulo de bloque debe implementar.
@@ -13,8 +14,7 @@ type Block interface {
 
 	// Init se llama una vez al inicio para pasar la configuración específica
 	// del bloque y el tema actual.
-	Init(config map[string]interface{}, theme lipgloss.Style) error
-
+	Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, style lipgloss.Style) error
 	// Update se llama para refrescar los datos del bloque.
 	// Debe ser una operación no bloqueante y devolver un tea.Cmd si es necesario.
 	Update() tea.Cmd

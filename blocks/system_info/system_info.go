@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
 )
 
@@ -15,6 +17,8 @@ type SystemInfoBlock struct {
 	id    string
 	style lipgloss.Style
 	info  string
+	updateInterval time.Duration
+	lastUpdateTime time.Time	
 }
 
 func New() block.Block {
@@ -25,13 +29,24 @@ func (b *SystemInfoBlock) Name() string {
 	return b.id
 }
 
-func (b *SystemInfoBlock) Init(config map[string]interface{}, style lipgloss.Style) error {
-	b.id = config["name"].(string)
+func (b *SystemInfoBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, style lipgloss.Style) error {
+	b.id = blockConfig["name"].(string)
 	b.style = style
+	
+	updateSecs, ok := blockConfig["update_seconds"].(float64)
+	if !ok || updateSecs <= 0 {
+		updateSecs = globalConfig.GlobalUpdateSeconds
+	}
+	b.updateInterval = time.Duration(updateSecs) * time.Second
+
 	return nil
 }
 
 func (b *SystemInfoBlock) Update() tea.Cmd {
+	if time.Since(b.lastUpdateTime) < b.updateInterval {
+		return nil // No es hora de actualizar
+	}
+
 	return func() tea.Msg {
 		// Helper to run a command and trim output
 		getOutput := func(name string, arg ...string) string {
@@ -72,5 +87,6 @@ type infoMsg struct {
 func (b *SystemInfoBlock) HandleMsg(msg tea.Msg) {
 	if m, ok := msg.(infoMsg); ok && m.blockID == b.id {
 		b.info = m.info
+		b.lastUpdateTime = time.Now() // Actualiza el tiempo		
 	}
 }

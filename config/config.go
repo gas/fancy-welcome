@@ -11,6 +11,7 @@ import (
 
 type GeneralConfig struct {
 	EnabledBlocksOrder []string `toml:"enabled_blocks_order"`
+	GlobalUpdateSeconds float64  `toml:"global_update_seconds"` // Update time de la app
 }
 
 type ThemeConfig struct {
