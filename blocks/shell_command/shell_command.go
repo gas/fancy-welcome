@@ -75,7 +75,7 @@ type ShellCommandBlock struct {
     //lastUpdated   time.Time
     cacheDuration 	time.Duration // 0 significa que la caché está desactivada
    	updateInterval 	time.Duration
-	lastUpdateTime 	time.Time
+	nextRunTime 	time.Time
     isLoading 		bool
     spinner   		spinner.Model
     width 			int
@@ -126,12 +126,24 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 
 	// 4. Lógica de Tiempo de Actualización
 	// Se busca "update_seconds" en el bloque. Si no se encuentra, se usa el valor global.
-	var updateSecs float64
-	if secs, ok := blockConfig["update_seconds"].(float64); ok && secs > 0 {
-		updateSecs = secs
-	} else {
-		updateSecs = globalConfig.GlobalUpdateSeconds		
+	var updateSecs float64 = 0
+	// Se busca la clave "update_seconds".
+	if val, ok := blockConfig["update_seconds"]; ok {
+		// Se usa un type switch para manejar de forma segura int o float.
+		switch v := val.(type) {
+		case float64:
+			updateSecs = v
+		case int:
+			updateSecs = float64(v)
+		case int64:
+			updateSecs = float64(v)
+		}	
 	}
+	// Si el valor es inválido (0, negativo) o no se encontró, se usa el global.
+	if updateSecs <= 0 {
+		updateSecs = globalConfig.GlobalUpdateSeconds
+	}
+
 	// Se establece un valor mínimo de 1 segundo para evitar bucles infinitos.
 	if updateSecs < 1 {
 		updateSecs = 1
@@ -158,13 +170,23 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
     // Podemos estilizar el spinner usando los colores del tema
     b.spinner.Style = lipgloss.NewStyle().Foreground(style.GetForeground())
 
+    b.nextRunTime = time.Now()
 	return nil
 }
 
 func (b *ShellCommandBlock) Update() tea.Cmd {
 	// Control de Frecuencia de Actualización (Limitador de frecuencia)
-	// Si no ha pasado suficiente tiempo según el 'update_seconds' del bloque, no se hace nada.
-	if time.Since(b.lastUpdateTime) < b.updateInterval {
+	// Si el bloque ya está cargando datos, no hacer nada.
+	// Esto previene las ejecuciones solapadas (re-entrada).
+	if b.isLoading {
+		return nil
+	}
+
+	// Comprueba si ya es hora de ejecutar según el horario objetivo.
+	//3 opciones, cada una tiene sus problemas, usamos la más robusta
+	//if time.Since(b.lastUpdateTime) < b.updateInterval { // estricto, requiere un scheduler en main.go
+	//if time.Since(b.lastUpdateTime).Round(time.Second) < b.updateInterval { // se acumula el desfase
+	if time.Now().Before(b.nextRunTime) {
 		return nil 
 	}
 
@@ -235,13 +257,13 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 }
 
 func (b *ShellCommandBlock) View() string {
-	// Si está cargando, muestra el spinner alineado con el ID del bloque.
-	if b.isLoading {
-		// Usamos JoinHorizontal para alinear el spinner y el texto.
+	// SOLUCIÓN: Si está cargando PERO aún no tenemos datos (carga inicial),
+	// mostramos el spinner. Si ya teníamos datos, los mostraremos aunque estén obsoletos.
+	if b.isLoading && b.parsedData == nil {
 		spinnerView := b.spinner.View()
-		idView := b.style.Copy().Faint(true).Render(b.id) // Atenuamos el ID
+		idView := b.style.Copy().Faint(true).Render(b.id)
 		return lipgloss.JoinHorizontal(lipgloss.Left, spinnerView, " ", idView)
-	}
+ 	}
 
 	// Si hay un error, lo mostramos usando el estilo base del bloque.
 	if b.currentError != nil {
@@ -250,13 +272,13 @@ func (b *ShellCommandBlock) View() string {
 		return b.style.Copy().Foreground(lipgloss.Color("9")).Render(errorMsg) // Color rojo para errores
 	}
 
-	// Si no hay datos (y no está cargando), devuelve un string vacío.
-	if b.parsedData == nil {
-		return b.style.Render("...") // Show ellipsis instead of nothing	
+	// Si tenemos datos (incluso si se están refrescando), los renderizamos.
+	if b.parsedData != nil {
+		return b.renderer.Render(b.parsedData, b.width, b.style)
 	}
 
-	// Si todo está bien, renderiza los datos.
-	return b.renderer.Render(b.parsedData, b.width, b.style)
+	// Fallback si no hay nada que mostrar
+	return b.style.Render("...")
 }
 
 // getCacheFilePath es una función helper para obtener la ruta del archivo de caché.
@@ -269,7 +291,7 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 	// La lógica de HandleMsg se actualiza para guardar el tiempo de la última actualización
 	handleCompletion := func() {
 		b.isLoading = false
-		b.lastUpdateTime = time.Now()
+		//b.lastUpdateTime = time.Now()
 	}
 
 	// Usamos un switch para manejar los diferentes tipos de mensajes
@@ -278,7 +300,7 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 	case freshDataMsg:
 		if m.blockID == b.id {
 			// Llamamos a handleCompletion para registrar la hora y detener la carga.
-			handleCompletion() 
+			//handleCompletion() 
 
 			b.currentError = m.err
 			if m.err == nil {
@@ -297,19 +319,27 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 					}
 				}
 			}
+			// Planifica la siguiente ejecución SOLO después de que ESTE bloque haya terminado.
+			b.nextRunTime = b.nextRunTime.Add(b.updateInterval)
+
+			handleCompletion()
 		}
 	// Caso para datos de la CACHÉ
 	case cachedDataMsg:
 		if m.blockID == b.id {
 			// También llamamos a handleCompletion para registrar la hora de la actualización.
-			handleCompletion()
+			//handleCompletion()
 
 			b.currentError = m.err
 			if m.err == nil {
 				b.parsedData = m.data
-				// NO escribimos en la caché aquí para no resetear el timestamp
 				logging.Log.Printf("[%s] Updated block with cached data.", b.id)
 			}
+
+			// Planifica la siguiente ejecución SOLO después de que ESTE bloque haya terminado.
+			b.nextRunTime = b.nextRunTime.Add(b.updateInterval)
+
+			handleCompletion()
 		}
 	}
 }
