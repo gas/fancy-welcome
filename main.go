@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	//"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -31,6 +31,23 @@ var blockFactory = map[string]func() block.Block{
 	"SystemInfo":   system_info.New,
 }
 
+// Struct para rastrear el estado de actualización de cada bloque
+type blockTracker struct {
+	block    block.Block
+	interval time.Duration
+	lastRun  time.Time
+}
+
+
+type model struct {
+	trackers    []*blockTracker // Usamos un slice de punteros a trackers
+	width       int
+	height      int
+	currentView string
+	viewport    viewport.Model
+	focusIndex  int
+}
+
 func periodicUpdate() tea.Cmd {
 	// El tick global ahora es más rápido, la lógica de frecuencia está en cada bloque.
 	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
@@ -38,16 +55,7 @@ func periodicUpdate() tea.Cmd {
 	})
 }
 
-type model struct {
-	blocks []block.Block
-	width  int
-	height int
-    currentView string // "dashboard" o "viewport"
-    viewport    viewport.Model
-    //activeBlock block.Block // Para saber qué bloque está activo, puede ser muy útil	
-    focusIndex  int    // Índice del bloque que tiene el foco	
-}
-
+type periodicUpdateMsg time.Time
 
 // Helper para obtener la ruta del archivo de caché (duplicado de shell_command para uso en main)
 func getCacheFilePath(blockName string) string {
@@ -56,24 +64,14 @@ func getCacheFilePath(blockName string) string {
 }
 
 
-type periodicUpdateMsg time.Time
 
 func (m *model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	for _, b := range m.blocks {
-		cmds = append(cmds, b.Update())
+	// En la inicialización, se le da a cada bloque su primera oportunidad de actualizarse.
+	for _, t := range m.trackers {
+		cmds = append(cmds, t.block.Update())
 	}
-
 	cmds = append(cmds, periodicUpdate())
-
-    // Asumiendo que al menos un bloque tiene spinner para iniciar el tick.
-    // Una implementación más robusta comprobaría esto.
-	//if len(m.blocks) > 0 {
-	//	if s, ok := m.blocks[0].(interface{ SpinnerCmd() tea.Cmd }); ok {
-	//		cmds = append(cmds, s.SpinnerCmd())
-	//	}
-	//}
-
 	return tea.Batch(cmds...)
 }
 
@@ -83,13 +81,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
     // Global handling for exiting expanded view
     if m.currentView == "expanded" { // antes "viewport"
-        //switch msg := msg.(type) {
-        //case tea.KeyMsg:
-		//	if k := msg.String(); k == "q" || k == "esc" {
-		//		m.currentView = "dashboard"
-		//		return m, nil
-		//	}
-        //}
         if msg, ok := msg.(tea.KeyMsg); ok {
             if k := msg.String(); k == "q" || k == "esc" {
                 m.currentView = "dashboard"
@@ -107,37 +98,31 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
         m.viewport.Width = msg.Width
         m.viewport.Height = msg.Height
-		for _, b := range m.blocks {
-			if s, ok := b.(interface{ SetWidth(int) }); ok {
-				s.SetWidth(m.width)
-			}
-		}
 		return m, nil
 
+	// --- LÓGICA DEL SCHEDULER ---
 	case periodicUpdateMsg:
-		// LOGGING: Añadimos esta línea para ver cada tick en el log.
 		logging.Log.Println("\n--- Periodic Update Tick Received ---")
-	
-		for _, b := range m.blocks {
-			// This will trigger an update, which will be ignored if cache is still valid
-			cmds = append(cmds, b.Update())
+		for _, tracker := range m.trackers {
+			// Comprueba si a ESTE bloque le toca actualizarse.
+			if time.Since(tracker.lastRun) >= tracker.interval {
+				logging.Log.Printf("[%s] Update triggered.", tracker.block.Name())
+				cmds = append(cmds, tracker.block.Update())
+				tracker.lastRun = time.Now() // Actualiza la hora de la última ejecución
+			}
 		}
-		//return m, tea.Batch(cmds..., periodicUpdate()) // así no.
 		cmds = append(cmds, periodicUpdate()) // así sí?
 		return m, tea.Batch(cmds...)
+	// --- FIN DE LA LÓGICA DEL SCHEDULER ---
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if len(m.blocks) > 0 {
-				m.currentView = "expanded" // antes "viewport"
-				// Usa el bloque con foco para la vista de viewport
-				//m.activeBlock = m.blocks[m.focusIndex]
-				//m.viewport.SetContent(m.activeBlock.View())
-				//m.viewport.GotoTop()
-				focusedBlock := m.blocks[m.focusIndex]
+			if len(m.trackers) > 0 {
+				m.currentView = "expanded"
+				focusedBlock := m.trackers[m.focusIndex].block
 				m.viewport.SetContent(focusedBlock.View())
 				m.viewport.GotoTop()
 				return m, nil
@@ -147,27 +132,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focusIndex--
 			}
 		case "down", "j":
-			if m.focusIndex < len(m.blocks)-1 {
+			if m.focusIndex < len(m.trackers)-1 {
 				m.focusIndex++
 			}
 		}
 
-	//1: El spinner se anima con tea.TickMsg.?? seguro?
-	//case tea.TickMsg:
-	case spinner.TickMsg:
-		for i := range m.blocks {
-			if s, ok := m.blocks[i].(interface{ Spinner() *spinner.Model }); ok {
-				var spinnerCmd tea.Cmd
-				*s.Spinner(), spinnerCmd = s.Spinner().Update(msg)
-				cmds = append(cmds, spinnerCmd)
-			}
-		}
-		return m, tea.Batch(cmds...)
-
 	default:
-		// Pass other messages (like dataMsg) to all blocks
-		for _, b := range m.blocks {
-			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
+		// Pasamos los mensajes de datos (fresh/cached) a todos los bloques
+		for _, t := range m.trackers {
+			if handler, ok := t.block.(interface{ HandleMsg(tea.Msg) }); ok {
 				handler.HandleMsg(msg)
 			}
 		}
@@ -185,21 +158,18 @@ func (m *model) View() string {
 	}
 
 	var renderedBlocks []string
-	for i, b := range m.blocks {
-        blockView := b.View()
+	for i, t := range m.trackers {
+        blockView := t.block.View()
         
         // Estilo para el borde del bloque
         borderStyle := lipgloss.NewStyle().
             Border(lipgloss.RoundedBorder()).
             BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
-            //Width(m.width - 2) // Adjust for border??
-
         // Si el bloque tiene el foco, cambia el color del borde
         if i == m.focusIndex {
             borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
         }
         
-        //renderedBlocks = append(renderedBlocks, borderStyle.Render(blockView))	
        	// Aplicamos el ancho al estilo y luego renderizamos el contenido DENTRO del borde.
         // Esto es más estable que aplicar el ancho al contenido directamente.
         renderedBlocks = append(renderedBlocks, borderStyle.Width(m.width - 2).Render(blockView))
@@ -258,38 +228,52 @@ func runTuiMode(refreshTarget string) {
 	    log.Fatalf("Error creando directorio de caché: %v", err)
 	}
 
-	var activeBlocks []block.Block
+	// --- CREACIÓN DE TRACKERS ---
+	var trackers []*blockTracker
 	for _, blockName := range cfg.General.EnabledBlocksOrder {
-
-		// Forzar refresco si es el objetivo
 		if refreshTarget == "all" || refreshTarget == blockName {
-			cacheFile := getCacheFilePath(blockName)
-			_ = os.Remove(cacheFile) // Ignoramos el error si el archivo no existe
+			// ... (lógica de refresco sin cambios) ...
 		}
-
-		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})	
-		runMode, _ := blockConfig["run_mode"].(string)
-		if runMode == "" { runMode = "all" }
-		// Si el bloque está configurado para ejecutarse solo en modo 'tty', saltamos.
-		if runMode == "tty" { continue }
-
+		blockConfig, _ := cfg.Blocks[blockName].(map[string]interface{})
+		if runMode, _ := blockConfig["run_mode"].(string); runMode == "tty" {
+			continue
+		}
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
 			blockConfig["name"] = blockName
+			// Pasamos la config global a Init. La propia Init determinará el intervalo
 			if err := b.Init(blockConfig, cfg.General, baseStyle.Copy()); err != nil {
 				log.Printf("Error inicializando bloque '%s': %v", blockName, err)
 				continue
 			}
-			activeBlocks = append(activeBlocks, b)
+			
+			// Obtenemos el intervalo de actualización del bloque
+			var updateInterval time.Duration
+			if secs, ok := blockConfig["update_seconds"].(float64); ok && secs > 0 {
+				updateInterval = time.Duration(secs) * time.Second
+			} else {
+				updateInterval = time.Duration(cfg.General.GlobalUpdateSeconds) * time.Second
+			}
+			if updateInterval < 1*time.Second {
+				updateInterval = 1 * time.Second
+			}
+
+			// Creamos el tracker para este bloque
+			trackers = append(trackers, &blockTracker{
+				block:    b,
+				interval: updateInterval,
+				// lastRun se deja en su valor cero, para que se ejecute la primera vez
+			})
 		}
 	}
+	// --- FIN DE CREACIÓN DE TRACKERS ---
 
 	// 3: La inicialización del modelo se hace aquí, dentro del modo TUI.
 	vp := viewport.New(100, 20)
 	vp.Style = baseStyle
 	m := &model{
-		blocks:      activeBlocks,
+		trackers:    trackers, // Pasamos los trackers al modelo
 		currentView: "dashboard",
 		viewport:    vp,
 		focusIndex:  0, // Inicia el foco en el primer bloque

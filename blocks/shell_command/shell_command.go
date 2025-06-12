@@ -67,15 +67,12 @@ type ShellCommandBlock struct {
 	id           	string // ID único del bloque
 	style        	lipgloss.Style
 	command      	string
-	// args      	[]string //ya no diferenciamos command y args, lo gestionamos internamente
 	parser       	parsers.Parser
 	renderer     	renderers.Renderer
 	parsedData   	interface{}
 	currentError 	error
-    //lastUpdated   time.Time
     cacheDuration 	time.Duration // 0 significa que la caché está desactivada
-   	updateInterval 	time.Duration
-	lastUpdateTime 	time.Time
+    lastUpdateTime	time.Time
     isLoading 		bool
     spinner   		spinner.Model
     width 			int
@@ -124,21 +121,6 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 	}
 	logging.Log.Printf("[%s] Cache duration set to %v", b.id, b.cacheDuration)
 
-	// 4. Lógica de Tiempo de Actualización
-	// Se busca "update_seconds" en el bloque. Si no se encuentra, se usa el valor global.
-	var updateSecs float64
-	if secs, ok := blockConfig["update_seconds"].(float64); ok && secs > 0 {
-		updateSecs = secs
-	} else {
-		updateSecs = globalConfig.GlobalUpdateSeconds		
-	}
-	// Se establece un valor mínimo de 1 segundo para evitar bucles infinitos.
-	if updateSecs < 1 {
-		updateSecs = 1
-	}
-	b.updateInterval = time.Duration(updateSecs) * time.Second
-	logging.Log.Printf("[%s] Update interval set to %v", b.id, b.updateInterval)
-
 	// --- 5. Inicialización de Parser y Renderer ---
 	parserName, _ := blockConfig["parser"].(string)
 	p, ok := registeredParsers[parserName]
@@ -154,6 +136,7 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 	}
 	b.renderer = r
 
+	// -- 6. spinner
     b.spinner = spinner.New()
     // Podemos estilizar el spinner usando los colores del tema
     b.spinner.Style = lipgloss.NewStyle().Foreground(style.GetForeground())
@@ -162,14 +145,8 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 }
 
 func (b *ShellCommandBlock) Update() tea.Cmd {
-	// Control de Frecuencia de Actualización (Limitador de frecuencia)
-	// Si no ha pasado suficiente tiempo según el 'update_seconds' del bloque, no se hace nada.
-	if time.Since(b.lastUpdateTime) < b.updateInterval {
-		return nil 
-	}
+	// La lógica de 'update_seconds' se ha movido al MainModel.
 
-	// Comprobación de Caché Simplificada
-	// Solo se intenta leer la caché si se ha definido una duración (cache > 0).
 	if b.cacheDuration > 0 {
 		cachePath := b.getCacheFilePath()
 		file, err := os.Open(cachePath)
@@ -266,10 +243,11 @@ func (b *ShellCommandBlock) getCacheFilePath() string {
 }
 
 func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
-	// La lógica de HandleMsg se actualiza para guardar el tiempo de la última actualización
+
 	handleCompletion := func() {
 		b.isLoading = false
 		b.lastUpdateTime = time.Now()
+		logging.Log.Printf("[%s] Update cycle completed. New lastUpdateTime: %s", b.id, b.lastUpdateTime.Format(time.RFC3339))
 	}
 
 	// Usamos un switch para manejar los diferentes tipos de mensajes
@@ -277,15 +255,15 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 	// Caso para datos FRESCOS
 	case freshDataMsg:
 		if m.blockID == b.id {
-			// Llamamos a handleCompletion para registrar la hora y detener la carga.
-			handleCompletion() 
+			b.isLoading = false
+			// llamaríamos a handleCompletion aquí, no está definida
+			handleCompletion()
 
 			b.currentError = m.err
 			if m.err == nil {
 				b.parsedData = m.data
 				// Si la caché está activada, escribimos los nuevos datos.
 				if b.cacheDuration > 0 {
-					// Solo escribimos en la caché cuando los datos son frescos
 					entry := cacheEntry{
 						Timestamp:  time.Now(),
 						ParsedData: m.data,
@@ -301,9 +279,9 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 	// Caso para datos de la CACHÉ
 	case cachedDataMsg:
 		if m.blockID == b.id {
-			// También llamamos a handleCompletion para registrar la hora de la actualización.
+			b.isLoading = false
+			// llamaríamos a handleCompletion aquí?, no está definida
 			handleCompletion()
-
 			b.currentError = m.err
 			if m.err == nil {
 				b.parsedData = m.data
