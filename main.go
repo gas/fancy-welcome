@@ -61,7 +61,13 @@ type periodicUpdateMsg time.Time
 func (m *model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, b := range m.blocks {
-		cmds = append(cmds, b.Update())
+		////cmds = append(cmds, b.Update())
+		// Recogemos tanto el comando de actualización de datos...
+		cmds = append(cmds, b.Update()) 
+		// ...como el comando para iniciar la animación del spinner, si existe.
+		if s, ok := b.(interface{ SpinnerCmd() tea.Cmd }); ok {
+			cmds = append(cmds, s.SpinnerCmd())
+		}
 	}
 
 	cmds = append(cmds, periodicUpdate())
@@ -277,7 +283,7 @@ func runTuiMode(refreshTarget string) {
 		if factory, ok := blockFactory[blockType]; ok {
 			b := factory()
 			blockConfig["name"] = blockName
-			if err := b.Init(blockConfig, cfg.General, baseStyle.Copy()); err != nil {
+			if err := b.Init(blockConfig, cfg.General, theme); err != nil {
 				log.Printf("Error inicializando bloque '%s': %v", blockName, err)
 				continue
 			}
@@ -309,6 +315,10 @@ func runTtyMode(refreshTarget string) {
 	if err != nil { 
 		logging.Log.Fatalf("Error cargando config: %v", err) 
 	}
+
+	//themes
+	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
+	if err != nil { log.Fatalf("Error cargando tema: %v", err) }
 
 	//cache
 	homeDir, err := os.UserHomeDir()
@@ -345,7 +355,7 @@ func runTtyMode(refreshTarget string) {
 			b := factory()
 			blockConfig["name"] = blockName
 
-			if err := b.Init(blockConfig, cfg.General, lipgloss.NewStyle()); err != nil {
+			if err := b.Init(blockConfig, cfg.General, theme); err != nil {
 				logging.Log.Printf("Error inicializando bloque '%s': %v", blockName, err)
 				continue
 			}

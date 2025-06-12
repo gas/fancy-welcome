@@ -9,6 +9,10 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+type IndicatorStyle struct {
+	Frames []string `toml:"frames"`
+}
+
 type ThemeColors struct {
 	Primary    string `toml:"primary"`
 	Secondary  string `toml:"secondary"`
@@ -20,6 +24,7 @@ type ThemeColors struct {
 type Theme struct {
 	Name   string      `toml:"name"`
 	Colors ThemeColors `toml:"colors"`
+	Indicators map[string]IndicatorStyle `toml:"indicators"`
 }
 
 func LoadTheme(themeName string) (*Theme, error) {

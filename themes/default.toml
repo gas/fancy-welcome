@@ -47,12 +47,10 @@ gauge_empty = "#4C566A"
 [indicators]
   [indicators.spinner]
   frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-  color = "#88C0D0" # Color primario
 
   [indicators.dots]
-  frames = [".  ", ".. ", "...", " ..", "  .", "   "]
-  color = "#EBCB8B" # Color de advertencia
-
+  frames = ["∙∙∙", "●∙∙", "∙●∙", "∙∙●", "∙∙∙"]
+  
   [indicators.bar]
   full_char = "█"
   empty_char = "░"

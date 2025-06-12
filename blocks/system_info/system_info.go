@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gas/fancy-welcome/config"
+	"github.com/gas/fancy-welcome/themes"
 	"github.com/gas/fancy-welcome/shared/block"
 )
 
@@ -29,10 +30,12 @@ func (b *SystemInfoBlock) Name() string {
 	return b.id
 }
 
-func (b *SystemInfoBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, style lipgloss.Style) error {
+func (b *SystemInfoBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, theme *themes.Theme) error {
 	b.id = blockConfig["name"].(string)
-	b.style = style
-	
+	b.style = lipgloss.NewStyle().
+		Background(lipgloss.Color(theme.Colors.Background)).
+		Foreground(lipgloss.Color(theme.Colors.Text))	
+
 	var updateSecs float64 = 0
 	// Se busca la clave "update_seconds".
 	if val, ok := blockConfig["update_seconds"]; ok {

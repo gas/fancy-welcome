@@ -17,6 +17,7 @@ import (
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/blocks/shell_command/parsers"
 	"github.com/gas/fancy-welcome/blocks/shell_command/renderers"
+	"github.com/gas/fancy-welcome/themes"
 	"github.com/gas/fancy-welcome/logging" // paquete de logging
 	"github.com/gas/fancy-welcome/shared/block"
 )
@@ -67,12 +68,10 @@ type ShellCommandBlock struct {
 	id           	string // ID único del bloque
 	style        	lipgloss.Style
 	command      	string
-	// args      	[]string //ya no diferenciamos command y args, lo gestionamos internamente
 	parser       	parsers.Parser
 	renderer     	renderers.Renderer
 	parsedData   	interface{}
 	currentError 	error
-    //lastUpdated   time.Time
     cacheDuration 	time.Duration // 0 significa que la caché está desactivada
    	updateInterval 	time.Duration
 	nextRunTime 	time.Time
@@ -105,10 +104,14 @@ func (b *ShellCommandBlock) Spinner() *spinner.Model { return &b.spinner }
 
 func (b *ShellCommandBlock) SpinnerCmd() tea.Cmd { return b.spinner.Tick }
 
-func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, style lipgloss.Style) error {
+func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, theme *themes.Theme) error {
 	// 1 --- Inicialización básica.
-	b.id = blockConfig["name"].(string)
-	b.style = style
+	b.id, _ = blockConfig["name"].(string)
+	// Creamos un estilo base para el bloque usando los colores del tema.
+	b.style = lipgloss.NewStyle().
+		Background(lipgloss.Color(theme.Colors.Background)).
+		Foreground(lipgloss.Color(theme.Colors.Text))
+
 	logging.Log.Printf("[%s] Initializing block...", b.id)
 
 	// 2. Lógica de comando menos enrevesada
@@ -166,10 +169,27 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 	}
 	b.renderer = r
 
-    b.spinner = spinner.New()
-    // Podemos estilizar el spinner usando los colores del tema
-    b.spinner.Style = lipgloss.NewStyle().Foreground(style.GetForeground())
+	// --- Lógica del Spinner Corregida ---
 
+	// 1. Leemos el estilo de indicador deseado desde la configuración del bloque
+	indicatorStyle, _ := blockConfig["loading_indicator"].(string)
+	if indicatorStyle == "" {
+		indicatorStyle = "spinner" // Usamos 'spinner' como valor por defecto
+	}
+ 
+	// 2. Creamos el spinner con los fotogramas del tema o usamos uno por defecto
+	spinnerOptions := []spinner.Option{
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Colors.Primary))),
+	}
+
+	if style, ok := theme.Indicators[indicatorStyle]; ok && len(style.Frames) > 0 {
+		spinnerAnimation := spinner.Spinner{Frames: style.Frames, FPS: time.Second / 10}
+		spinnerOptions = append(spinnerOptions, spinner.WithSpinner(spinnerAnimation))
+	}
+
+	b.spinner = spinner.New(spinnerOptions...)
+
+    //Y borramos esto???
     b.nextRunTime = time.Now()
 	return nil
 }
@@ -257,28 +277,24 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 }
 
 func (b *ShellCommandBlock) View() string {
-	// SOLUCIÓN: Si está cargando PERO aún no tenemos datos (carga inicial),
-	// mostramos el spinner. Si ya teníamos datos, los mostraremos aunque estén obsoletos.
-	if b.isLoading && b.parsedData == nil {
-		spinnerView := b.spinner.View()
-		idView := b.style.Copy().Faint(true).Render(b.id)
-		return lipgloss.JoinHorizontal(lipgloss.Left, spinnerView, " ", idView)
- 	}
+	var content string
 
-	// Si hay un error, lo mostramos usando el estilo base del bloque.
 	if b.currentError != nil {
-		// Aplicamos el estilo para asegurar consistencia de color y padding.
 		errorMsg := fmt.Sprintf("Error en '%s': %v", b.id, b.currentError)
-		return b.style.Copy().Foreground(lipgloss.Color("9")).Render(errorMsg) // Color rojo para errores
+		content = b.style.Copy().Foreground(lipgloss.Color("9")).Render(errorMsg)
+	} else if b.parsedData != nil {
+		// Si tenemos datos (antiguos o nuevos), los renderizamos.
+		content = b.renderer.Render(b.parsedData, b.width, b.style)
+	} else {
+		// No hay datos ni error, probablemente la carga inicial.
+		content = "..."
 	}
 
-	// Si tenemos datos (incluso si se están refrescando), los renderizamos.
-	if b.parsedData != nil {
-		return b.renderer.Render(b.parsedData, b.width, b.style)
+	// Si está cargando, añadimos el spinner al final del contenido.
+	if b.isLoading {
+		return lipgloss.JoinHorizontal(lipgloss.Top, content, " "+b.spinner.View())
 	}
-
-	// Fallback si no hay nada que mostrar
-	return b.style.Render("...")
+	return content
 }
 
 // getCacheFilePath es una función helper para obtener la ruta del archivo de caché.
