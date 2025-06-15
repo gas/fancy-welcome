@@ -111,8 +111,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
         m.viewport.Width = msg.Width
         m.viewport.Height = msg.Height
+
+        // debes recalcular y establecer el contenido completo del viewport principal
+        // para que pueda determinar si necesita desplazarse.
+        m.viewport.SetContent(m.renderDashboardContent()) // ¡Nueva función!
+
 		for _, b := range m.blocks {
 			if s, ok := b.(interface{ SetWidth(int) }); ok {
 				s.SetWidth(m.width)
@@ -148,15 +154,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoTop()
 				return m, nil
 			}
-		case "up", "k":
-			if m.focusIndex > 0 {
-				m.focusIndex--
-			}
-		case "down", "j":
-			if m.focusIndex < len(m.blocks)-1 {
-				m.focusIndex++
-			}
-		}
+        // Ahora, las flechas arriba/abajo controlan el desplazamiento del viewport principal.
+        case "up", "k":
+            m.viewport, cmd = m.viewport.Update(msg) // Pasa el mensaje al viewport principal
+            cmds = append(cmds, cmd)
+        case "down", "j":
+            m.viewport, cmd = m.viewport.Update(msg) // Pasa el mensaje al viewport principal
+            cmds = append(cmds, cmd)
+        case "pgup", "pgdown": // También para Page Up/Page Down
+            m.viewport, cmd = m.viewport.Update(msg)
+            cmds = append(cmds, cmd)
+        case "tab": // El Tab sigue para cambiar el foco visual (borde)
+            m.focusIndex = (m.focusIndex + 1) % len(m.blocks)
+            // Después de cambiar el foco, puedes querer asegurarte de que el panel enfocado
+            // esté visible en el viewport. Puedes llamar a m.viewport.SetYOffset(offset)
+            // para desplazarlo. Esto es un poco más complejo y lo veremos más adelante si es necesario.
+        }
 
 	//1: El spinner se anima con tea.TickMsg.?? seguro?
 	//case tea.TickMsg:
@@ -181,37 +194,47 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *model) View() string {
-    if m.currentView == "expanded" {
-        return m.viewport.View()
-    }	
+// renderDashboardContent es una nueva función auxiliar que genera el string
+// completo de todos los bloques, listo para ser puesto en el viewport.
+func (m *model) renderDashboardContent() string {
+    if m.width == 0 {
+        return "Initializing..."
+    }
 
-	if m.width == 0 {
-		return "Initializing..."
-	}
-
-	var renderedBlocks []string
-	for i, b := range m.blocks {
+    var renderedBlocks []string
+    for i, b := range m.blocks {
         blockView := b.View()
-        
+
         // Estilo para el borde del bloque
         borderStyle := lipgloss.NewStyle().
             Border(lipgloss.RoundedBorder()).
             BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
-            //Width(m.width - 2) // Adjust for border??
 
         // Si el bloque tiene el foco, cambia el color del borde
         if i == m.focusIndex {
             borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
         }
-        
-        //renderedBlocks = append(renderedBlocks, borderStyle.Render(blockView))	
-       	// Aplicamos el ancho al estilo y luego renderizamos el contenido DENTRO del borde.
-        // Esto es más estable que aplicar el ancho al contenido directamente.
+
+        // Aplicamos el ancho al estilo y luego renderizamos el contenido DENTRO del borde.
         renderedBlocks = append(renderedBlocks, borderStyle.Width(m.width - 2).Render(blockView))
     }
-	return strings.Join(renderedBlocks, "\n")
+    return strings.Join(renderedBlocks, "\n")
 }
+
+func (m *model) View() string {
+    if m.currentView == "expanded" {
+    	// en vista expandida solo viewport de ese bloque
+        return m.viewport.View()
+    }	
+
+    // En el modo dashboard, el viewport principal contiene todo el contenido renderizado.
+    // Asegúrate de que el viewport tiene el contenido más reciente.
+    // Esto es crucial para que el desplazamiento funcione correctamente.
+    m.viewport.SetContent(m.renderDashboardContent())
+    return m.viewport.View()
+
+}
+
 
 // --- La nueva lógica principal en main() ---
 
