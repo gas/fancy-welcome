@@ -44,6 +44,7 @@ func init() {
 	// Register Parsers
 	registeredParsers["single_line"] = &parsers.SingleLineParser{}
 	registeredParsers["multi_line"] = &parsers.MultiLineParser{}
+	registeredParsers["raw_multi_line"] = &parsers.RawMultiLineParser{}
 	registeredParsers["app_count"] = &parsers.AppCountParser{}
 	registeredParsers["dev_versions"] = &parsers.DevVersionsParser{}
 	registeredParsers["journald_errors"] = &parsers.JournaldErrorsParser{}
