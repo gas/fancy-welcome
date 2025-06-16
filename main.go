@@ -20,7 +20,8 @@ import (
 	"github.com/gas/fancy-welcome/blocks/system_info"
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
-	"github.com/gas/fancy-welcome/themes"
+    "github.com/gas/fancy-welcome/shared/messages"
+    "github.com/gas/fancy-welcome/themes"
 	"github.com/gas/fancy-welcome/logging"
 )
 
@@ -31,12 +32,7 @@ var blockFactory = map[string]func() block.Block{
 	"SystemInfo":   system_info.New,
 }
 
-func periodicUpdate() tea.Cmd {
-	// El tick global ahora es más rápido, la lógica de frecuencia está en cada bloque.
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-		return periodicUpdateMsg(t)
-	})
-}
+
 
 type model struct {
 	blocks []block.Block
@@ -46,6 +42,15 @@ type model struct {
     viewport    viewport.Model
     //activeBlock block.Block // Para saber qué bloque está activo, puede ser muy útil	
     focusIndex  int    // Índice del bloque que tiene el foco	
+	focusableBlocksOrder []block.Block // Lista que representa el orden visual de los bloques para el foco
+	dashboardNeedsRender bool          // Nuevo flag: true si el contenido del dashboard (o su layout/altura) ha cambiado
+    // Nueva estructura para almacenar información del layout visual
+    blockLayoutInfo []struct {
+        Block     block.Block
+        StartLine int // Línea de inicio de este bloque en el dashboard total
+        Height    int // Altura total de este bloque renderizado
+    }
+    spinnerForTicks spinner.Model // Un spinner "invisible" solo para generar ticks
 }
 
 
@@ -56,29 +61,39 @@ func getCacheFilePath(blockName string) string {
 }
 
 
-type periodicUpdateMsg time.Time
-
 func (m *model) Init() tea.Cmd {
 	var cmds []tea.Cmd
+
+    // **** CAMBIO AQUI ****
+    // Inicializar el spinner "invisible" con un tipo de spinner conocido y probado.
+    // Esto es para aislar si el problema está en la inicialización del spinner o en el flujo de mensajes.
+    m.spinnerForTicks = spinner.New(
+        spinner.WithSpinner(spinner.Spinner{ // <-- Esta es la forma correcta de usar WithSpinner
+            Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}, // Los frames por defecto
+            FPS: time.Second / 10, // 10 FPS
+        }),
+    )
+
+    cmds = append(cmds, m.spinnerForTicks.Tick) // Inicia el comando para que este spinner genere ticks
+    logging.Log.Println("DEBUG: spinnerForGlobalTicks.Tick command added to initial batch with known spinner.")
+    // ********************
+
+//    m.spinnerForTicks = spinner.New(
+//        spinner.WithSpinner(spinner.Spinner{ // Usa el spinner por defecto o uno de tus temas
+//            Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}, // Default spinner frames
+//            FPS: time.Second / 10, // 10 fotogramas por segundo (o lo que desees)
+//        }),
+//    )
+//    cmds = append(cmds, m.spinnerForTicks.Tick) // Inicia el comando para que este spinner genere ticks
+
+
 	for _, b := range m.blocks {
-		////cmds = append(cmds, b.Update())
-		// Recogemos tanto el comando de actualización de datos...
 		cmds = append(cmds, b.Update()) 
-		// ...como el comando para iniciar la animación del spinner, si existe.
-		if s, ok := b.(interface{ SpinnerCmd() tea.Cmd }); ok {
-			cmds = append(cmds, s.SpinnerCmd())
-		}
 	}
 
-	cmds = append(cmds, periodicUpdate())
-
-    // Asumiendo que al menos un bloque tiene spinner para iniciar el tick.
-    // Una implementación más robusta comprobaría esto.
-	//if len(m.blocks) > 0 {
-	//	if s, ok := m.blocks[0].(interface{ SpinnerCmd() tea.Cmd }); ok {
-	//		cmds = append(cmds, s.SpinnerCmd())
-	//	}
-	//}
+	//cmds = append(cmds, periodicUpdate())
+    m.dashboardNeedsRender = true // Asegúrate de que el dashboard se renderiza al inicio
+	m.updateFocusableOrder()
 
 	return tea.Batch(cmds...)
 }
@@ -115,6 +130,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         m.viewport.Width = msg.Width
         m.viewport.Height = msg.Height
 
+		m.dashboardNeedsRender = true // La ventana cambió de tamaño, hay que re-renderizar todo
+
         // debes recalcular y establecer el contenido completo del viewport principal
         // para que pueda determinar si necesita desplazarse.
         m.viewport.SetContent(m.renderDashboardContent()) // ¡Nueva función!
@@ -126,17 +143,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case periodicUpdateMsg:
-		// LOGGING: Añadimos esta línea para ver cada tick en el log.
-		logging.Log.Println("\n--- Periodic Update Tick Received ---")
-	
-		for _, b := range m.blocks {
-			// This will trigger an update, which will be ignored if cache is still valid
-			cmds = append(cmds, b.Update())
-		}
-		//return m, tea.Batch(cmds..., periodicUpdate()) // así no.
-		cmds = append(cmds, periodicUpdate()) // así sí?
-		return m, tea.Batch(cmds...)
+	// nuevo case
+    case messages.FreshDataMsg, messages.CachedDataMsg: // Interceptamos mensajes de datos para marcar `dashboardNeedsRender`
+        for _, b := range m.blocks {
+            if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
+                handler.HandleMsg(msg) // Pasamos el mensaje al bloque para que actualice su estado
+                // Si el bloque indica que su contenido ha cambiado, marcamos el dashboard para re-renderizar
+                if b.HasContentChanged() {
+                    m.dashboardNeedsRender = true
+                }
+            }
+        }
+        return m, tea.Batch(cmds...) // Continúa procesando posibles comandos generados por HandleMsg
+
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -165,60 +184,313 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             m.viewport, cmd = m.viewport.Update(msg)
             cmds = append(cmds, cmd)
         case "tab": // El Tab sigue para cambiar el foco visual (borde)
-            m.focusIndex = (m.focusIndex + 1) % len(m.blocks)
-            // Después de cambiar el foco, puedes querer asegurarte de que el panel enfocado
-            // esté visible en el viewport. Puedes llamar a m.viewport.SetYOffset(offset)
-            // para desplazarlo. Esto es un poco más complejo y lo veremos más adelante si es necesario.
-        }
+            if len(m.focusableBlocksOrder) > 0 {	            
+                m.focusIndex = (m.focusIndex + 1) % len(m.focusableBlocksOrder) 
+            	m.dashboardNeedsRender = true // El foco cambió, el render necesita actualizar los bordes
+            	// Lógica de desplazamiento automático (¡esto puede ser costoso!)
+            	m.adjustViewportToFocus() // Nueva función auxiliar para el desplazamiento
+	        }
+            return m, nil
+	    }
 
 	//1: El spinner se anima con tea.TickMsg.?? seguro?
 	//case tea.TickMsg:
 	case spinner.TickMsg:
+    	//logging.Log.Println("DEBUG: Received spinner.TickMsg.")
+    	var spinnerCmd tea.Cmd
+
+	    m.spinnerForTicks, spinnerCmd = m.spinnerForTicks.Update(msg)
+	    cmds = append(cmds, spinnerCmd) 
+    	//logging.Log.Println(fmt.Sprintf("DEBUG: Reprogramming next spinner tick. Cmd is nil: %t", spinnerCmd == nil))
+
 		for i := range m.blocks {
 			if s, ok := m.blocks[i].(interface{ Spinner() *spinner.Model }); ok {
-				var spinnerCmd tea.Cmd
-				*s.Spinner(), spinnerCmd = s.Spinner().Update(msg)
-				cmds = append(cmds, spinnerCmd)
+				*s.Spinner(), _ = s.Spinner().Update(msg) // Solo actualiza
 			}
 		}
+
+		// 3. ¡NUEVO! Usamos este tick para disparar las actualizaciones de datos.
+		// La lógica interna de cada bloque (`nextRunTime`) decidirá si realmente hace algo.
+		for _, b := range m.blocks {
+			if cmd := b.Update(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
+	    m.dashboardNeedsRender = true // Un tick del spinner significa que la UI debe re-renderizarse
+
 		return m, tea.Batch(cmds...)
 
-	default:
+	//default:
 		// Pass other messages (like dataMsg) to all blocks
-		for _, b := range m.blocks {
-			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
-				handler.HandleMsg(msg)
-			}
-		}
+	//	for _, b := range m.blocks {
+	//		if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
+	//			handler.HandleMsg(msg)
+
+    //          	if b.HasContentChanged() { // Recheck here if not handled specifically above
+    //           	m.dashboardNeedsRender = true
+    //          	}
+   	//		}
+	//	}
 	}
 	return m, tea.Batch(cmds...)
 }
 
-// renderDashboardContent es una nueva función auxiliar que genera el string
-// completo de todos los bloques, listo para ser puesto en el viewport.
+// función auxiliar que genera el string completo de todos los bloques, 
+// listo para ser puesto en el viewport.
 func (m *model) renderDashboardContent() string {
     if m.width == 0 {
         return "Initializing..."
     }
 
-    var renderedBlocks []string
-    for i, b := range m.blocks {
-        blockView := b.View()
 
-        // Estilo para el borde del bloque
-        borderStyle := lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
+    finalOutputLines := []string{}
+    m.blockLayoutInfo = []struct{ Block block.Block; StartLine int; Height int }{} // Resetear
 
-        // Si el bloque tiene el foco, cambia el color del borde
-        if i == m.focusIndex {
-            borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
+    currentRenderLine := 0 // Contador para la línea de inicio de cada bloque
+
+    var currentRowBlocks []block.Block // Para acumular bloques que irán en la misma fila horizontal
+
+    // Recorremos los bloques en su orden original de configuración (m.blocks)
+    //for blockIndexInConfig, currentBlock := range m.blocks {
+    for _, currentBlock := range m.blocks {
+        position := currentBlock.GetPosition()
+
+        if position == "left" {
+            // Si es "left", lo añadimos a la fila actual y esperamos un "right"
+            currentRowBlocks = append(currentRowBlocks, currentBlock)
+        } else if position == "right" {
+            // Si es "right" y tenemos un "left" esperando, formamos una fila horizontal
+            if len(currentRowBlocks) > 0 && currentRowBlocks[0].GetPosition() == "left" {
+            	// hay un par left + right renderizamos horizontal
+                leftBlock := currentRowBlocks[0]
+                rightBlock := currentBlock // Este es el bloque "right" actual
+
+                halfWidth := (m.width / 2) // Divide el ancho disponible por 2
+                // Puedes restar 1 para un pequeño espacio/separador si quieres: halfWidth := (m.width / 2) - 1
+                if halfWidth < 0 { halfWidth = 0 }
+
+                // Asignar el ancho calculado a cada bloque antes de renderizar
+                leftBlock.SetWidth(halfWidth)
+                rightBlock.SetWidth(halfWidth)
+
+                // Determinar si alguno de estos bloques tiene el foco
+                isLeftBlockFocused := false
+                isRightBlockFocused := false
+                if len(m.focusableBlocksOrder) > m.focusIndex { // Evitar pánico si focusIndex es inválido
+                    focusedBlock := m.focusableBlocksOrder[m.focusIndex]
+                    if focusedBlock == leftBlock {
+                        isLeftBlockFocused = true
+                    } else if focusedBlock == rightBlock {
+                        isRightBlockFocused = true
+                    }
+                }
+
+                // Renderizar cada bloque estilizado y obtener su altura
+                renderedLeftStr, heightLeft := m.renderStyledBlock(leftBlock, isLeftBlockFocused)
+                renderedRightStr, heightRight := m.renderStyledBlock(rightBlock, isRightBlockFocused)
+
+                // La altura de la fila combinada es la altura máxima de los bloques que la componen.
+                rowHeight := max(heightLeft, heightRight)
+
+                // Ajustar la altura de los bloques individuales para que coincidan con la altura de la fila,
+                // rellenando con espacios si es necesario (JoinVertical por defecto no lo hace si no se especifica)
+                // Usamos AlignVertical(lipgloss.Top) para asegurarnos que el contenido se pega arriba.
+                styledLeft := lipgloss.NewStyle().Height(rowHeight).AlignVertical(lipgloss.Top).Render(renderedLeftStr)
+                styledRight := lipgloss.NewStyle().Height(rowHeight).AlignVertical(lipgloss.Top).Render(renderedRightStr)
+
+                // Unir los bloques horizontalmente
+                combinedRow := lipgloss.JoinHorizontal(lipgloss.Top, styledLeft, styledRight)
+                finalOutputLines = append(finalOutputLines, combinedRow)
+                
+                // Almacenar información de layout para ambos bloques que forman esta fila
+                // Asumimos que ambos comparten la misma StartLine pero el 'tab' los diferenciará
+                m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                    Block: leftBlock,
+                    StartLine: currentRenderLine,
+                    Height: rowHeight,
+                })
+                 m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                    Block: rightBlock,
+                    StartLine: currentRenderLine,
+                    Height: rowHeight,
+                })
+
+                currentRenderLine += rowHeight // Avanzar el contador de línea
+                currentRowBlocks = nil // Reiniciar para la siguiente fila
+
+            } else {
+                // "right" aparece sin un "left" precedente: renderizarlo como "full"
+                // Primero, limpia cualquier "left" pendiente si lo hubiera (debería ser handled por el flujo normal)
+                for _, pendingBlock := range currentRowBlocks {
+                    pendingBlock.SetWidth(m.width) // Se le da ancho completo
+                    isPendingBlockFocused := false // Asume que no tiene foco si no fue consumido
+                    if len(m.focusableBlocksOrder) > m.focusIndex && m.focusableBlocksOrder[m.focusIndex] == pendingBlock {
+                        isPendingBlockFocused = true
+                    }
+                    renderedStr, renderedHeight := m.renderStyledBlock(pendingBlock, isPendingBlockFocused)
+                    finalOutputLines = append(finalOutputLines, renderedStr)
+                    m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                        Block: pendingBlock, StartLine: currentRenderLine, Height: renderedHeight,
+                    })
+                    currentRenderLine += renderedHeight
+                }
+                currentRowBlocks = nil
+
+                // Renderizar el actual "right" como "full"
+                currentBlock.SetWidth(m.width)
+                isCurrentBlockFocused := false
+                if len(m.focusableBlocksOrder) > m.focusIndex && m.focusableBlocksOrder[m.focusIndex] == currentBlock {
+                    isCurrentBlockFocused = true
+                }
+                renderedStr, renderedHeight := m.renderStyledBlock(currentBlock, isCurrentBlockFocused)
+                finalOutputLines = append(finalOutputLines, renderedStr)
+                m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                    Block: currentBlock, StartLine: currentRenderLine, Height: renderedHeight,
+                })
+                currentRenderLine += renderedHeight
+			}
+        } else { // position == "full" o cualquier otro valor (por defecto)
+            // Si hay bloques pendientes en currentRowBlocks (un "left" que no encontró su "right"),
+            // renderizarlos como "full" antes del bloque actual.
+            for _, pendingBlock := range currentRowBlocks {
+                pendingBlock.SetWidth(m.width)
+                isPendingBlockFocused := false
+                 if len(m.focusableBlocksOrder) > m.focusIndex && m.focusableBlocksOrder[m.focusIndex] == pendingBlock {
+                    isPendingBlockFocused = true
+                }
+                renderedStr, renderedHeight := m.renderStyledBlock(pendingBlock, isPendingBlockFocused)
+                finalOutputLines = append(finalOutputLines, renderedStr)
+                m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                    Block: pendingBlock, StartLine: currentRenderLine, Height: renderedHeight,
+                })
+                currentRenderLine += renderedHeight
+            }
+            currentRowBlocks = nil // Limpiar los pendientes
+
+            // Renderizar el bloque actual (que es "full")
+            currentBlock.SetWidth(m.width)
+            isCurrentBlockFocused := false
+            if len(m.focusableBlocksOrder) > m.focusIndex && m.focusableBlocksOrder[m.focusIndex] == currentBlock {
+                isCurrentBlockFocused = true
+            }
+            renderedStr, renderedHeight := m.renderStyledBlock(currentBlock, isCurrentBlockFocused)
+            finalOutputLines = append(finalOutputLines, renderedStr)
+            m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+                Block: currentBlock, StartLine: currentRenderLine, Height: renderedHeight,
+            })
+            currentRenderLine += renderedHeight            
         }
-
-        // Aplicamos el ancho al estilo y luego renderizamos el contenido DENTRO del borde.
-        renderedBlocks = append(renderedBlocks, borderStyle.Width(m.width - 2).Render(blockView))
     }
-    return strings.Join(renderedBlocks, "\n")
+
+    // Después de procesar todos los bloques de m.blocks,
+    // si aún queda algún bloque en currentRowBlocks (un "left" al final de la lista),
+    // lo renderizamos como "full".
+    for _, pendingBlock := range currentRowBlocks {
+        pendingBlock.SetWidth(m.width)
+        isPendingBlockFocused := false
+        if len(m.focusableBlocksOrder) > m.focusIndex && m.focusableBlocksOrder[m.focusIndex] == pendingBlock {
+            isPendingBlockFocused = true
+        }
+        renderedStr, renderedHeight := m.renderStyledBlock(pendingBlock, isPendingBlockFocused)
+        finalOutputLines = append(finalOutputLines, renderedStr)
+        m.blockLayoutInfo = append(m.blockLayoutInfo, struct{ Block block.Block; StartLine int; Height int }{
+            Block: pendingBlock, StartLine: currentRenderLine, Height: renderedHeight,
+        })
+        currentRenderLine += renderedHeight        
+    }
+
+    return strings.Join(finalOutputLines, "\n")
+}
+
+// Función auxiliar simple para max
+func max(a, b int) int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// updateFocusableOrder construye la lista de bloques en el orden en que deben recibir el foco.
+// Se llama al inicio y cuando la configuración de bloques cambie (ej. añadir/quitar dinámicamente).
+func (m *model) updateFocusableOrder() {
+    m.focusableBlocksOrder = nil // Reset
+
+    var currentRowBlocks []block.Block
+    for _, b := range m.blocks {
+        position := b.GetPosition()
+        if position == "left" {
+            currentRowBlocks = append(currentRowBlocks, b)
+        } else if position == "right" {
+            if len(currentRowBlocks) > 0 && currentRowBlocks[0].GetPosition() == "left" {
+                currentRowBlocks = append(currentRowBlocks, b)
+                m.focusableBlocksOrder = append(m.focusableBlocksOrder, currentRowBlocks...) // Añadir ambos
+                currentRowBlocks = nil
+            } else {
+                // Right sin left, añadirlo como full
+                m.focusableBlocksOrder = append(m.focusableBlocksOrder, b)
+                currentRowBlocks = nil
+            }
+        } else { // "full"
+            // Añadir cualquier pendiente de la fila anterior como full
+            if len(currentRowBlocks) > 0 {
+                m.focusableBlocksOrder = append(m.focusableBlocksOrder, currentRowBlocks...)
+                currentRowBlocks = nil
+            }
+            m.focusableBlocksOrder = append(m.focusableBlocksOrder, b)
+        }
+    }
+    // Añadir cualquier pendiente final
+    if len(currentRowBlocks) > 0 {
+        m.focusableBlocksOrder = append(m.focusableBlocksOrder, currentRowBlocks...)
+    }
+}
+
+// renderStyledBlock es una función auxiliar que renderiza un bloque individual
+// con su título, borde y estilo de foco.
+func (m *model) renderStyledBlock(b block.Block, isFocused bool) (string, int) {
+    blockView := b.View()
+    blockName := b.Name()
+
+    // Estilo para el borde del bloque
+    borderStyle := lipgloss.NewStyle().
+        Border(lipgloss.RoundedBorder()).
+        BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
+
+    // Si el bloque tiene el foco, cambia el color del borde
+    if isFocused {
+        borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
+    }
+
+    // Obtener los colores del tema para el título desde el bloque
+    blockThemeColors := b.GetThemeColors()
+    titleStyle := lipgloss.NewStyle().
+        Background(lipgloss.Color(blockThemeColors.TitleBackground)).
+        Foreground(lipgloss.Color(blockThemeColors.TitleForeground)).
+        PaddingLeft(1).PaddingRight(1).
+        Bold(true)
+
+    title := titleStyle.Render(blockName)
+
+    // Ajusta el ancho del contenido DENTRO del borde y el título.
+    // El ancho total que se le dio al bloque es b.GetSetWidth().
+    // Restamos 2 por los bordes laterales.
+    contentWidth := b.GetSetWidth() - 2
+    if contentWidth < 0 { contentWidth = 0 }
+
+    // Asegura que el contenido se ajusta al ancho disponible antes de renderizarlo.
+    wrappedContent := lipgloss.NewStyle().Width(contentWidth).Render(blockView)
+
+    // Unir el título y el contenido verticalmente.
+    blockContentWithTitle := lipgloss.JoinVertical(lipgloss.Left, title, wrappedContent)
+
+    // Aplicar el estilo de borde final
+    finalRenderedBlock := borderStyle.Width(b.GetSetWidth()).Render(blockContentWithTitle)
+
+    // Calcular la altura total de este bloque renderizado
+    totalHeight := strings.Count(finalRenderedBlock, "\n") + 1
+
+    return finalRenderedBlock, totalHeight
 }
 
 func (m *model) View() string {
@@ -227,11 +499,40 @@ func (m *model) View() string {
         return m.viewport.View()
     }	
 
-    // En el modo dashboard, el viewport principal contiene todo el contenido renderizado.
-    // Asegúrate de que el viewport tiene el contenido más reciente.
-    // Esto es crucial para que el desplazamiento funcione correctamente.
-    m.viewport.SetContent(m.renderDashboardContent())
+    // Solo re-renderizar el contenido del dashboard si es necesario
+    if m.dashboardNeedsRender {
+        // Reconstruye el orden de los bloques enfocables (esto debe ser eficiente)
+        m.updateFocusableOrder() 
+        // Genera el contenido completo del dashboard
+        dashboardContentString := m.renderDashboardContent()
+        m.viewport.SetContent(dashboardContentString)
+        m.dashboardNeedsRender = false // Resetear el flag
+        
+        // ¡Importante! Resetear los flags de "contenido cambiado" en cada bloque
+        for _, b := range m.blocks {
+            b.ResetContentChangedFlag()
+        }
+    }
+
     return m.viewport.View()
+
+}
+
+// main.go (nuevo método en model)
+func (m *model) adjustViewportToFocus() {
+    if m.focusIndex < 0 || m.focusIndex >= len(m.focusableBlocksOrder) {
+        return // Índice de foco inválido
+    }
+
+    focusedBlock := m.focusableBlocksOrder[m.focusIndex]
+    
+    for _, info := range m.blockLayoutInfo {
+        if info.Block == focusedBlock {
+            m.viewport.SetYOffset(info.StartLine)
+            break
+        }
+
+    }
 
 }
 
@@ -325,6 +626,7 @@ func runTuiMode(refreshTarget string) {
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
+
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error ejecutando el programa: %v\n", err)
 		os.Exit(1)

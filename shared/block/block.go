@@ -22,4 +22,14 @@ type Block interface {
 
 	// View genera la cadena de texto a renderizar para el bloque.
 	View() string
+	RenderedHeight() int      // Devuelve la altura de la última vista renderizada
+	GetPosition() string      // Nuevo método para obtener la posición
+	SetWidth(width int)       // Crucial para el layout
+    GetSetWidth() int         // Nuevo método para obtener el ancho que se le asignó
+    GetThemeColors() themes.ThemeColors // Nuevo método para obtener los colores del tema inyectados
+   	// Nuevo método: informa al modelo si el bloque ha cambiado de tal forma que
+    // el dashboard necesita re-renderizarse (ej. cambió su contenido o altura).
+    HasContentChanged() bool
+    ResetContentChangedFlag() // Resetea el flag después de que el dashboard lo procesa
 }
+

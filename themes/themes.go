@@ -18,6 +18,8 @@ type ThemeColors struct {
 	Secondary  string `toml:"secondary"`
 	Background string `toml:"background"`
 	Text       string `toml:"text"`
+	TitleBackground	string `toml:"title_bg"`
+	TitleForeground	string `toml:"title_fg"`
 	Error      string `toml:"error"`
 }
 

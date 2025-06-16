@@ -20,22 +20,10 @@ import (
 	"github.com/gas/fancy-welcome/themes"
 	"github.com/gas/fancy-welcome/logging" // paquete de logging
 	"github.com/gas/fancy-welcome/shared/block"
+    "github.com/gas/fancy-welcome/shared/messages" // Importa el nuevo paquete
 )
 
 
-// --- NUEVOS TIPOS DE MENSAJE ---
-// Mensaje para cuando los datos son nuevos (de un comando)
-type freshDataMsg struct {
-	blockID string
-	data    interface{}
-	err     error
-}
-// Mensaje para cuando los datos vienen de la caché
-type cachedDataMsg struct {
-	blockID string
-	data    interface{}
-	err     error
-}
 
 var registeredParsers = make(map[string]parsers.Parser)
 var registeredRenderers = make(map[string]renderers.Renderer)
@@ -78,6 +66,10 @@ type ShellCommandBlock struct {
     isLoading 		bool
     spinner   		spinner.Model
     width 			int
+   	position string // "left", "right", o vacío (full width)
+    blockTheme *themes.Theme // Nuevo campo para almacenar el tema
+	renderedHeight       int  // Altura del bloque en su última renderización
+    contentChangedSinceLastView bool // Nuevo flag
 }
 
 // CORRECCIÓN 2: Añadir 'blockID' al mensaje para saber a quién pertenece.
@@ -189,9 +181,29 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 
 	b.spinner = spinner.New(spinnerOptions...)
 
-    //Y borramos esto???
+	// 3. posición left 50%, right 50% o full 100%
+	if pos, ok := blockConfig["position"].(string); ok {
+		b.position = pos
+	} else {
+		b.position = "full" // Valor por defecto
+	}
+    b.blockTheme = theme // Almacenar el tema
+
     b.nextRunTime = time.Now()
 	return nil
+}
+
+// funciones de ancho y posición
+func (b *ShellCommandBlock) GetPosition() string {
+	return b.position
+}
+
+func (b *ShellCommandBlock) GetSetWidth() int { // Implementar el nuevo método
+    return b.width
+}
+
+func (b *ShellCommandBlock) GetThemeColors() themes.ThemeColors {
+    return b.blockTheme.Colors
 }
 
 func (b *ShellCommandBlock) Update() tea.Cmd {
@@ -207,9 +219,16 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 	//if time.Since(b.lastUpdateTime) < b.updateInterval { // estricto, requiere un scheduler en main.go
 	//if time.Since(b.lastUpdateTime).Round(time.Second) < b.updateInterval { // se acumula el desfase
 	if time.Now().Before(b.nextRunTime) {
+        if b.isLoading { // Si el comando ya está en progreso y no ha terminado
+            return nil
+        }
 		return nil 
 	}
 
+    logging.Log.Printf("[%s] ACTIVANDO SPINNER: isLoading = true", b.id)
+    b.isLoading = true // Activar el spinner
+
+    
 	// Comprobación de Caché Simplificada
 	// Solo se intenta leer la caché si se ha definido una duración (cache > 0).
 	if b.cacheDuration > 0 {
@@ -226,7 +245,7 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 					logging.Log.Printf("[%s] CACHE HIT. Data is fresh.", b.id)
 					// Se devuelve un mensaje para notificar que se usarán datos de la caché
 					return func() tea.Msg {
-						return cachedDataMsg{blockID: b.id, data: entry.ParsedData, err: nil}
+						return messages.CachedDataMsg{BlockID: b.id, Data: entry.ParsedData, Err: nil}
 					}
 				}
 			}
@@ -240,7 +259,9 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 
 	// Si la caché ha expirado, procede con la ejecución normal
 	return func() tea.Msg {
-		var output []byte
+    // Batch el comando de ejecución y el comando para iniciar el tick del spinner
+    //return tea.Batch(func() tea.Msg {
+    	var output []byte
 		var err error
 
 		// Ejecución de Comando Simplificada
@@ -251,7 +272,7 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 			output, err = cmd.CombinedOutput()
 			if err != nil {
 				logging.Log.Printf("[%s] EXECUTION ERROR: %v. Output: %s", b.id, err, string(output))
-				return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución del comando: %w", err)}
+				return messages.FreshDataMsg{BlockID: b.id, Err: fmt.Errorf("falló la ejecución del comando: %w", err)}
 			}
 			// LOGGING: Registra la salida cruda del comando
 			logging.Log.Printf("[%s] Raw command output: %s", b.id, strings.TrimSpace(string(output)))
@@ -266,14 +287,14 @@ func (b *ShellCommandBlock) Update() tea.Cmd {
 			// LOGGING: Registra un error en el parseo
 			logging.Log.Printf("[%s] PARSING ERROR: %v", b.id, err)			
             // Incluimos el ID en el mensaje de error.
-			return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló el parseo: %w", err)}
+			return messages.FreshDataMsg{BlockID: b.id, Err: fmt.Errorf("falló el parseo: %w", err)}
 		}
 		
 		// LOGGING: Registra que el parseo fue exitoso
 		logging.Log.Printf("[%s] Parsing successful.", b.id)
 	    // Incluimos el ID en el mensaje de éxito.
-		return freshDataMsg{blockID: b.id, data: parsedData}
-	}
+		return messages.FreshDataMsg{BlockID: b.id, Data: parsedData}
+	}//, b.spinner.Tick) // <-- Inicia el tick del spinner
 }
 
 func (b *ShellCommandBlock) View() string {
@@ -294,7 +315,36 @@ func (b *ShellCommandBlock) View() string {
 	if b.isLoading {
 		return lipgloss.JoinHorizontal(lipgloss.Top, content, " "+b.spinner.View())
 	}
+
+    // Calcular la altura después de renderizar el contenido.
+    // Asegúrate de que `renderedContent` es el string final incluyendo título y borde.
+    // Para esto, necesitarás que `renderStyledBlock` (o similar) sea parte del View del bloque,
+    // o que `View` devuelva el contenido *sin* el borde/título y la altura se calcule después.
+    // Por simplicidad, aquí asumimos `blockView` es lo que genera `b.View()` antes del borde/título.
+    //blockView := content // ... (el string que b.View() normalmente devuelve)
+    //currentHeight := strings.Count(blockView, "\n") + 1 // Contar líneas, +1 para la última línea sin \n
+
 	return content
+}
+
+func (b *ShellCommandBlock) RenderedHeight() int {
+    if b.parsedData == nil {
+        return 1 // O alguna altura por defecto para "Loading..."
+    }
+    // Renderizar el contenido para calcular su altura real con el ancho asignado, lipgloss no tiene estos métodos? o nuestra versión
+    //renderedContent := b.renderer.Render(b.parsedData, b.width, b.style.Copy().UnsetMargins().UnsetPadding().UnsetBorder())
+    renderedContent := b.renderer.Render(b.parsedData, b.width, b.style)
+    return strings.Count(renderedContent, "\n") + 1
+}
+
+// Nuevo: Se activa cuando los datos REALMENTE cambian.
+func (b *ShellCommandBlock) HasContentChanged() bool {
+    return b.contentChangedSinceLastView
+}
+
+// Nuevo: Se resetea después de que el dashboard lo ha procesado.
+func (b *ShellCommandBlock) ResetContentChangedFlag() {
+    b.contentChangedSinceLastView = false
 }
 
 // getCacheFilePath es una función helper para obtener la ruta del archivo de caché.
@@ -306,27 +356,29 @@ func (b *ShellCommandBlock) getCacheFilePath() string {
 func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 	// La lógica de HandleMsg se actualiza para guardar el tiempo de la última actualización
 	handleCompletion := func() {
-		b.isLoading = false
-		//b.lastUpdateTime = time.Now()
+        if b.isLoading { // Solo log si estaba cargando y ahora se desactiva
+            logging.Log.Printf("[%s] DESACTIVANDO SPINNER: isLoading = false", b.id)
+            b.isLoading = false
+        }
 	}
 
 	// Usamos un switch para manejar los diferentes tipos de mensajes
 	switch m := msg.(type) {
 	// Caso para datos FRESCOS
-	case freshDataMsg:
-		if m.blockID == b.id {
+	case messages.FreshDataMsg:
+		if m.BlockID == b.id {
 			// Llamamos a handleCompletion para registrar la hora y detener la carga.
 			//handleCompletion() 
 
-			b.currentError = m.err
-			if m.err == nil {
-				b.parsedData = m.data
+			b.currentError = m.Err
+			if m.Err == nil {
+				b.parsedData = m.Data
 				// Si la caché está activada, escribimos los nuevos datos.
 				if b.cacheDuration > 0 {
 					// Solo escribimos en la caché cuando los datos son frescos
 					entry := cacheEntry{
 						Timestamp:  time.Now(),
-						ParsedData: m.data,
+						ParsedData: m.Data,
 					}
 					bytes, err := json.Marshal(entry)
 					if err == nil {
@@ -338,22 +390,29 @@ func (b *ShellCommandBlock) HandleMsg(msg tea.Msg) {
 			// Planifica la siguiente ejecución SOLO después de que ESTE bloque haya terminado.
 			b.nextRunTime = b.nextRunTime.Add(b.updateInterval)
 
+            if m.Err == nil { // Solo si los datos se actualizaron correctamente
+                b.contentChangedSinceLastView = true // Marcar que el contenido ha cambiado
+            }
+
 			handleCompletion()
 		}
 	// Caso para datos de la CACHÉ
-	case cachedDataMsg:
-		if m.blockID == b.id {
+	case messages.CachedDataMsg:
+		if m.BlockID == b.id {
 			// También llamamos a handleCompletion para registrar la hora de la actualización.
 			//handleCompletion()
 
-			b.currentError = m.err
-			if m.err == nil {
-				b.parsedData = m.data
+			b.currentError = m.Err
+			if m.Err == nil {
+				b.parsedData = m.Data
 				logging.Log.Printf("[%s] Updated block with cached data.", b.id)
 			}
 
 			// Planifica la siguiente ejecución SOLO después de que ESTE bloque haya terminado.
 			b.nextRunTime = b.nextRunTime.Add(b.updateInterval)
+
+            // Opcional: Marcar como cambiado si la caché cambia, aunque es menos común.
+            // b.contentChangedSinceLastView = true
 
 			handleCompletion()
 		}
