@@ -2,17 +2,16 @@
 package renderers
 
 import (
-    //"fmt"
+    "fmt"
+    //"strings"
     "github.com/charmbracelet/lipgloss"
 )
 
 type RawTextRenderer struct{}
 
 func (r *RawTextRenderer) Render(data interface{}, width int, style lipgloss.Style) string {
-    // Aseguramos que los datos son del tipo esperado (string)
-    message, ok := data.(string)
-    if !ok {
-        return style.Render("Error: RawTextRenderer esperaba un string.")
+    if text, ok := data.(string); ok {
+        return style.Render(text)
     }
-    return style.Render(message)
+    return style.Render(fmt.Sprintf("Error: RawTextRenderer recibió datos incompatibles de tipo %T", data))
 }

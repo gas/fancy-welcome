@@ -6,7 +6,7 @@ import "strings"
 type RawMultiLineParser struct{}
 
 func (p *RawMultiLineParser) Parse(input string) (interface{}, error) {
-    // Divide por nueva línea y elimina espacios en blanco de cada una.
+    // Divide por nueva línea y no elimina espacios en blanco de cada una.
     lines := strings.Split(input, "\n")
     var cleanedLines []string
     for _, line := range lines {

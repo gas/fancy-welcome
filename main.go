@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 	"path/filepath"
-	"time"
+	//"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
+	//"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -31,21 +31,19 @@ var blockFactory = map[string]func() block.Block{
 	"SystemInfo":   system_info.New,
 }
 
-func periodicUpdate() tea.Cmd {
-	// El tick global ahora es más rápido, la lógica de frecuencia está en cada bloque.
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-		return periodicUpdateMsg(t)
-	})
-}
 
 type model struct {
-	blocks []block.Block
-	width  int
-	height int
+	blocks 		[]block.Block
+	width  		int
+	height 		int
     currentView string // "dashboard" o "viewport"
     viewport    viewport.Model
-    //activeBlock block.Block // Para saber qué bloque está activo, puede ser muy útil	
-    focusIndex  int    // Índice del bloque que tiene el foco	
+    //activeBlock 		block.Block // Para saber qué bloque está activo, ya no se usa	
+    focusIndex  		int    // Índice del bloque que tiene el foco	
+	dashboardVP 		viewport.Model // Para la vista principal
+	expandedVP  		viewport.Model  // Para la vista de un solo bloque
+	normalBorderStyle 	lipgloss.Style
+	focusBorderStyle  	lipgloss.Style
 }
 
 
@@ -56,146 +54,104 @@ func getCacheFilePath(blockName string) string {
 }
 
 
-type periodicUpdateMsg time.Time
-
 func (m *model) Init() tea.Cmd {
-	var cmds []tea.Cmd
-	for _, b := range m.blocks {
-		////cmds = append(cmds, b.Update())
-		// Recogemos tanto el comando de actualización de datos...
-		cmds = append(cmds, b.Update()) 
-		// ...como el comando para iniciar la animación del spinner, si existe.
-		if s, ok := b.(interface{ SpinnerCmd() tea.Cmd }); ok {
-			cmds = append(cmds, s.SpinnerCmd())
-		}
-	}
-
-	cmds = append(cmds, periodicUpdate())
-
-    // Asumiendo que al menos un bloque tiene spinner para iniciar el tick.
-    // Una implementación más robusta comprobaría esto.
-	//if len(m.blocks) > 0 {
-	//	if s, ok := m.blocks[0].(interface{ SpinnerCmd() tea.Cmd }); ok {
-	//		cmds = append(cmds, s.SpinnerCmd())
-	//	}
-	//}
-
-	return tea.Batch(cmds...)
+    // Enviar un mensaje inicial a todos los bloques para que comiencen a cargar
+    return func() tea.Msg {
+        return block.TriggerUpdateMsg{}
+    }
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    var cmd tea.Cmd
-    var cmds []tea.Cmd
+    logging.Log.Printf("--- MAIN UPDATE RECEIVED MSG TYPE: %T ---", msg)
 
-    // Global handling for exiting expanded view
+    var cmds []tea.Cmd
+    var cmd tea.Cmd
+
+    // Global handling for expanded view and exiting it
     if m.currentView == "expanded" { // antes "viewport"
-        //switch msg := msg.(type) {
-        //case tea.KeyMsg:
-		//	if k := msg.String(); k == "q" || k == "esc" {
-		//		m.currentView = "dashboard"
-		//		return m, nil
-		//	}
-        //}
-        if msg, ok := msg.(tea.KeyMsg); ok {
-            if k := msg.String(); k == "q" || k == "esc" {
+        if keyMsg, ok := msg.(tea.KeyMsg); ok {
+            k := keyMsg.String(); 
+            if k == "q" || k == "esc" || k == "enter" {
                 m.currentView = "dashboard"
-                return m, nil
+               	return m, nil
             }
         }
-        // Pass all other messages to the viewport
-        m.viewport, cmd = m.viewport.Update(msg)
+        // Pass all other messages to the expanded viewport
+		m.expandedVP, cmd = m.expandedVP.Update(msg)
         return m, cmd
     }
 
+	// Si estamos en el dashboard, manejamos los eventos del dashboard.
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
-        m.viewport.Width = msg.Width
-        m.viewport.Height = msg.Height
-
-        // debes recalcular y establecer el contenido completo del viewport principal
-        // para que pueda determinar si necesita desplazarse.
-        m.viewport.SetContent(m.renderDashboardContent()) // ¡Nueva función!
-
-		for _, b := range m.blocks {
-			if s, ok := b.(interface{ SetWidth(int) }); ok {
-				s.SetWidth(m.width)
-			}
-		}
-		return m, nil
-
-	case periodicUpdateMsg:
-		// LOGGING: Añadimos esta línea para ver cada tick en el log.
-		logging.Log.Println("\n--- Periodic Update Tick Received ---")
-	
-		for _, b := range m.blocks {
-			// This will trigger an update, which will be ignored if cache is still valid
-			cmds = append(cmds, b.Update())
-		}
-		//return m, tea.Batch(cmds..., periodicUpdate()) // así no.
-		cmds = append(cmds, periodicUpdate()) // así sí?
-		return m, tea.Batch(cmds...)
+        m.dashboardVP.Width = msg.Width
+        m.dashboardVP.Height = msg.Height
+		m.expandedVP.Width = msg.Width 
+		m.expandedVP.Height = msg.Height
+		return m, nil // Termina aquí
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
-			if len(m.blocks) > 0 {
-				m.currentView = "expanded" // antes "viewport"
-				// Usa el bloque con foco para la vista de viewport
-				//m.activeBlock = m.blocks[m.focusIndex]
-				//m.viewport.SetContent(m.activeBlock.View())
-				//m.viewport.GotoTop()
-				focusedBlock := m.blocks[m.focusIndex]
-				m.viewport.SetContent(focusedBlock.View())
-				m.viewport.GotoTop()
-				return m, nil
-			}
+			//if len(m.blocks) > 0 {
+			m.currentView = "expanded" // antes "viewport"
+			focusedBlock := m.blocks[m.focusIndex]
+			m.expandedVP.SetContent(focusedBlock.View())
+			m.expandedVP.GotoTop()
+			//}
+			return m, nil
         // Ahora, las flechas arriba/abajo controlan el desplazamiento del viewport principal.
         case "up", "k":
-            m.viewport, cmd = m.viewport.Update(msg) // Pasa el mensaje al viewport principal
+            m.dashboardVP, cmd = m.dashboardVP.Update(msg) // Pasa el mensaje al viewport principal
             cmds = append(cmds, cmd)
         case "down", "j":
-            m.viewport, cmd = m.viewport.Update(msg) // Pasa el mensaje al viewport principal
+            m.dashboardVP, cmd = m.dashboardVP.Update(msg) // Pasa el mensaje al viewport principal
             cmds = append(cmds, cmd)
         case "pgup", "pgdown": // También para Page Up/Page Down
-            m.viewport, cmd = m.viewport.Update(msg)
+            m.dashboardVP, cmd = m.dashboardVP.Update(msg)
             cmds = append(cmds, cmd)
         case "tab": // El Tab sigue para cambiar el foco visual (borde)
             m.focusIndex = (m.focusIndex + 1) % len(m.blocks)
-            // Después de cambiar el foco, puedes querer asegurarte de que el panel enfocado
-            // esté visible en el viewport. Puedes llamar a m.viewport.SetYOffset(offset)
-            // para desplazarlo. Esto es un poco más complejo y lo veremos más adelante si es necesario.
+            return m, nil 
         }
 
-	//1: El spinner se anima con tea.TickMsg.?? seguro?
-	//case tea.TickMsg:
-	case spinner.TickMsg:
-		for i := range m.blocks {
-			if s, ok := m.blocks[i].(interface{ Spinner() *spinner.Model }); ok {
-				var spinnerCmd tea.Cmd
-				*s.Spinner(), spinnerCmd = s.Spinner().Update(msg)
-				cmds = append(cmds, spinnerCmd)
-			}
-		}
-		return m, tea.Batch(cmds...)
+    
 
-	default:
-		// Pass other messages (like dataMsg) to all blocks
-		for _, b := range m.blocks {
-			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
-				handler.HandleMsg(msg)
-			}
-		}
+    default:
+	    // --- BUCLE DE DELEGACIÓN ---
+		// ¿Es un mensaje dirigido a un bloque específico?
+		if targetMsg, ok := msg.(block.TargetedMsg); ok {
+			// Sí, es dirigido. Buscamos el bloque objetivo.
+			targetID := targetMsg.BlockID()
+		    for i, b := range m.blocks {
+				if b.Name() == targetID {
+					updatedBlock, cmd := b.Update(msg)
+		        	m.blocks[i] = updatedBlock 
+		        	cmds = append(cmds, cmd)
+		        	break // out of tha loop
+		        }
+		    }
+	    } else {
+			// No, es un mensaje general (como TriggerUpdateMsg o spinner.TickMsg).
+			// Lo enviamos a todos los bloques.
+			for i, b := range m.blocks {
+				updatedBlock, cmd := b.Update(msg)
+				m.blocks[i] = updatedBlock
+				cmds = append(cmds, cmd)
+			}	    	
+	    }
 	}
+
 	return m, tea.Batch(cmds...)
 }
 
-// renderDashboardContent es una nueva función auxiliar que genera el string
-// completo de todos los bloques, listo para ser puesto en el viewport.
+// renderDashboardContent era una función auxiliar que generaba el string
+// completo de todos los bloques, listo para ser puesto en el viewport. 
+// ya no hace falta, todo va en el View.
 func (m *model) renderDashboardContent() string {
     if m.width == 0 {
         return "Initializing..."
@@ -210,6 +166,8 @@ func (m *model) renderDashboardContent() string {
             Border(lipgloss.RoundedBorder()).
             BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
 
+    		logging.Log.Printf("--- nombre de bloque: %T ---Indice de foco", b.Name())
+
         // Si el bloque tiene el foco, cambia el color del borde
         if i == m.focusIndex {
             borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
@@ -222,17 +180,94 @@ func (m *model) renderDashboardContent() string {
 }
 
 func (m *model) View() string {
-    if m.currentView == "expanded" {
-    	// en vista expandida solo viewport de ese bloque
-        return m.viewport.View()
-    }	
 
-    // En el modo dashboard, el viewport principal contiene todo el contenido renderizado.
-    // Asegúrate de que el viewport tiene el contenido más reciente.
-    // Esto es crucial para que el desplazamiento funcione correctamente.
-    m.viewport.SetContent(m.renderDashboardContent())
-    return m.viewport.View()
+	if m.currentView == "expanded" {
+		// Si estamos en vista expandida, mostramos ESE viewport
+		return m.expandedVP.View()
+	}
+    
+    if m.width == 0 { return "Initializing..." }
 
+    var finalLayout []string       // Almacenará los elementos finales (columnas unidas y bloques full)
+    var leftColumnViews []string   // Vistas pendientes para la columna izquierda
+    var rightColumnViews []string  // Vistas pendientes para la columna derecha
+
+    // Función helper para procesar y limpiar las columnas pendientes.
+    processPendingColumns := func() {
+        if len(leftColumnViews) > 0 || len(rightColumnViews) > 0 {
+            leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftColumnViews...)
+            rightColumn := lipgloss.JoinVertical(lipgloss.Left, rightColumnViews...)
+            
+            // Une las columnas horizontalmente
+            joinedCols := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
+            finalLayout = append(finalLayout, joinedCols)
+
+            // Limpia los slices para la siguiente sección de columnas
+            leftColumnViews = []string{}
+            rightColumnViews = []string{}
+        }
+    }
+
+    // 1. Renderizar y agrupar vistas por posición
+    for i, b := range m.blocks {
+        blockView := b.View()
+
+    	//logging.Log.Printf("FOCUS CHECK: focusIndex=%d, blockIndex=%d, blockName=%s", m.focusIndex, i, b.Name())
+
+        // Aplicar borde y foco (como ya haces)
+	    var borderStyle lipgloss.Style
+	    if i == m.focusIndex {
+	        borderStyle = m.focusBorderStyle
+	    } else {
+	        borderStyle = m.normalBorderStyle
+	    }
+
+		//linea clave para asignar el borde correcto
+		//renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
+        
+        // Asumimos una nueva propiedad `Position` en la interfaz Block.
+        // Los bloques sin "left" o "right" se consideran "full".
+        position := b.Position() 
+
+        if position == "left" || position == "right" {
+            // Renderizamos el bloque con un ancho aproximado de la mitad de la pantalla
+            // Menos espacio para padding y bordes.
+            blockWidth := (m.width / 2) - 4 
+            renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
+
+            if position == "left" {
+                leftColumnViews = append(leftColumnViews, renderedBlock)
+            } else {
+                rightColumnViews = append(rightColumnViews, renderedBlock)
+            }
+        } else { // El bloque es "full-width"
+            // 1. Procesa cualquier columna que estuviera pendiente antes de este bloque.
+            processPendingColumns()
+
+            // 2. Renderiza el bloque de ancho completo y añádelo al layout final.
+            blockWidth := m.width - 2 // Ancho completo menos bordes
+            renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
+            finalLayout = append(finalLayout, renderedBlock)
+        }
+
+    }
+
+    // 3. Procesa cualquier columna que haya quedado al final del bucle.
+    processPendingColumns()
+
+    // Antes devolvíamos todo a lipgloss pero necesitamos el viewport
+    // 4A. Unía todos los elementos del layout final verticalmente.
+    // return lipgloss.JoinVertical(lipgloss.Left, finalLayout...)
+
+    // 4B. Al viewport
+    // 1. Unimos todos los elementos del layout final en un solo string.
+    fullLayout := lipgloss.JoinVertical(lipgloss.Left, finalLayout...)
+
+    // 2. Establecemos ese string como el contenido de nuestro viewport.
+    m.dashboardVP.SetContent(fullLayout)
+
+    // 3. Devolvemos la vista del viewport, que se encargará del scroll.
+    return m.dashboardVP.View()
 }
 
 
@@ -273,6 +308,16 @@ func runTuiMode(refreshTarget string) {
 	//themes
 	theme, err := themes.LoadTheme(cfg.Theme.SelectedTheme)
 	if err != nil { log.Fatalf("Error cargando tema: %v", err) }
+
+	// LEEMOS ESTILOS UNA SOLA VEZ ---
+	normalBorderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(theme.Colors.Border)) // Usamos el color del tema
+
+	focusBorderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(theme.Colors.Primary)) // Usamos el color primario para el foco
+
 
 	baseStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(theme.Colors.Background)).
@@ -315,13 +360,18 @@ func runTuiMode(refreshTarget string) {
 	}
 
 	// 3: La inicialización del modelo se hace aquí, dentro del modo TUI.
-	vp := viewport.New(100, 20)
-	vp.Style = baseStyle
+	dashVP := viewport.New(100, 20) // El tamaño inicial no es crítico, se ajusta luego
+	expVP := viewport.New(100, 20)
+	expVP.Style = baseStyle
+	dashVP.Style = baseStyle
 	m := &model{
 		blocks:      activeBlocks,
 		currentView: "dashboard",
-		viewport:    vp,
+		dashboardVP: dashVP,
+		expandedVP:  expVP,
 		focusIndex:  0, // Inicia el foco en el primer bloque
+		normalBorderStyle: normalBorderStyle,
+		focusBorderStyle:  focusBorderStyle,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -388,22 +438,23 @@ func runTtyMode(refreshTarget string) {
 
 	// 3. Ejecutar los bloques de forma síncrona
 	for _, b := range activeBlocks {
-		cmd := b.Update()
 
-		// Si se devolvió un comando (no se usó la caché), ejecútalo.
+		// Paso 3.1: Iniciar la actualización.
+		updatedBlock, cmd := b.Update(block.TriggerUpdateMsg{})
+
+		// Paso 3.2: Ejecutar el comando si es necesario.
 		if cmd != nil {
-			// Ejecutamos el comando y obtenemos el mensaje directamente.
+			// Esta llamada es bloqueante: espera a que el comando termine y devuelve el mensaje.
 			msg := cmd()
 			
-			// Pasamos el mensaje al bloque para que actualice su estado interno.
-			if handler, ok := b.(interface{ HandleMsg(tea.Msg) }); ok {
-				handler.HandleMsg(msg)
-			}
+			// Paso 3.3: Finalizar la actualización.
+			updatedBlock, _ = updatedBlock.Update(msg)
 		}
 
-		// Ahora, el estado del bloque está actualizado (desde caché o ejecución).
-		// Imprimimos la vista del bloque directamente a la consola.
-		fmt.Println(b.View())
+		// Paso 4: Imprimir la vista.
+		// Ahora que el bloque está completamente actualizado (desde caché o ejecución),
+		// imprimimos su vista directamente a la consola.
+		fmt.Println(updatedBlock.View())
 		fmt.Println("---") // Añadimos un separador simple
 	}
 }
