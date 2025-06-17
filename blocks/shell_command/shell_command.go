@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"bufio"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
@@ -91,15 +92,37 @@ type ShellCommandBlock struct {
     position     	string
     width 			int
 	rendererName   	string 
+    isStreaming    	bool // <-- STREAM 
 	blockConfig    	map[string]interface{}
 }
 
-// CORRECCIÓN 2: Añadir 'blockID' al mensaje para saber a quién pertenece.
+// Añadido 'blockID' al mensaje para saber a quién pertenece.
 type dataMsg struct {
 	blockID string
 	data    interface{}
 	err     error
 }
+
+// STREAM
+// streamLineMsg transporta una sola línea de un comando en modo streaming.
+type streamLineMsg struct {
+	blockID string
+	line    string
+}
+// Hacemos que sea un mensaje dirigido
+func (m streamLineMsg) BlockID() string { return m.blockID }
+
+
+// streamClosedMsg notifica que un comando en modo streaming ha terminado o ha fallado.
+type streamClosedMsg struct {
+	blockID string
+	err     error
+}
+func (m streamClosedMsg) BlockID() string { return m.blockID }
+
+
+// OTROS
+
 
 func (b *ShellCommandBlock) Position() string {
     return b.position
@@ -128,7 +151,6 @@ func (b *ShellCommandBlock) Spinner() *spinner.Model { return &b.spinner }
 
 func (b *ShellCommandBlock) SpinnerCmd() tea.Cmd { return b.spinner.Tick }
 
-// Reemplaza tu función Init en shell_command.go con esta:
 func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, theme *themes.Theme) error {
 	b.blockConfig = blockConfig
 	b.id, _ = blockConfig["name"].(string)
@@ -198,6 +220,8 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 		spinnerOptions = append(spinnerOptions, spinner.WithSpinner(spinnerAnimation))
 	}
 	b.spinner = spinner.New(spinnerOptions...)
+
+    b.isStreaming, _ = blockConfig["streaming"].(bool) // <-- STREAM
 	return nil
 }
 
@@ -206,46 +230,97 @@ func (b *ShellCommandBlock) RendererName() string {
 }
 
 // En shell_command.go Y en system_info.go
-func (b *ShellCommandBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
+func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea.Cmd) {
     //logging.Log.Printf("SC Update: [%s] received msg: %T", b.id, msg)
 
     var cmd tea.Cmd
 
 	switch m := msg.(type) {
+
 	// Este case ahora maneja DOS tipos de trigger:
 	// 1. El TriggerUpdateMsg general del arranque.
 	// 2. Un BlockTickMsg que sea para este bloque en específico.
 	case block.TriggerUpdateMsg, block.BlockTickMsg:
 		// Para BlockTickMsg, nos aseguramos de que es para nosotros.
 		if tick, ok := m.(block.BlockTickMsg); ok {
-			if tick.TargetBlockID != b.id {
+			if tick.BlockID() != b.id {
 				return b, nil // No es para mí, lo ignoro.
 			}
 		}
 
 		// Si llegamos aquí, es nuestro turno de actualizar.
-		if b.isLoading {
-			return b, nil
+		if b.isLoading { return b, nil }
+
+        // --- LÓGICA DE DECISIÓN: ¿STREAMING O COMANDO NORMAL? ---
+        if b.isStreaming {
+            logging.Log.Printf("[%s] Starting stream...", b.id)
+            b.isLoading = true // Mostramos el spinner mientras se conecta
+            cmd := exec.Command("sh", "-c", b.command)
+            // Devolvemos un nuevo tipo de comando que escucha el stream
+            return b, listenToStream(p, cmd, b.id)
+        } else {
+			// COMANDO NORMAL
+			b.isLoading = true
+			// el Batch que muestra vivos los spinners
+			return b, tea.Batch(
+				b.fetchDataCmd(), // El comando para cargar los datos
+				b.spinner.Tick,   // El comando para INICIAR la animación del spinner
+			)
 		}
 
-		// (El resto de la lógica de caché y fetchDataCmd se mantiene igual)
-		// ...
-		b.isLoading = true
-		//return b, b.fetchDataCmd() // O el comando que sea para system_info
-		return b, tea.Batch(
-			b.fetchDataCmd(), // El comando para cargar los datos
-			b.spinner.Tick,   // El comando para INICIAR la animación del spinner
-		)
+    // --- GESTIÓN DE MENSAJES DE STREAM ---
+/*
+    case streamLineMsg:
+        if m.blockID != b.id { return b, nil }
+        b.isLoading = false // Dejamos de mostrar el spinner una vez que llega la primera línea
+
+        // La línea recibida es nuestro nuevo "dato parseado"
+        b.parsedData = m.line
+
+        // Creamos el comando para emitir la línea con "tee"
+        teeCmd := func() tea.Msg {
+            return block.TeeOutputMsg{
+                SourceBlockID: b.id,
+                Output:        m.line,
+            }
+        }
+        // Devolvemos el comando "tee". No necesitamos programar un Tick aquí,
+        // ya que el stream sigue vivo y enviando datos.
+        return b, teeCmd
+*/
+    case streamClosedMsg:
+        if m.blockID != b.id { return b, nil }
+        b.isLoading = false
+        b.currentError = m.err
+        logging.Log.Printf("[%s] Closed stream...", b.id)
+
+        // El stream ha muerto, programamos un reintento.
+        return b, block.ScheduleNextTick(b.id, time.Second*5) // Reintentar en 5s
+
+    // --- MENSAJES DE COMANDOS NORMALES ---
 
 	// Cuando los datos llegan, programamos el SIGUIENTE TICK DIRIGIDO.
 	case freshDataMsg: // O infoMsg para system_info
 		if m.BlockID() != b.id { return b, nil }
 		b.isLoading = false
 		b.parsedData = m.data // o b.info = m.info
-		
-		// Llamamos al nuevo planificador dirigido.
-		return b, block.ScheduleNextTick(b.id, b.updateInterval)
+		b.currentError = m.err
 
+		// Creamos el comando para emitir los datos
+		teeCmd := func() tea.Msg {
+			return block.TeeOutputMsg{
+				SourceBlockID: b.id,
+				Output:        b.parsedData,
+			}
+		}
+		
+		// Devolvemos AMBOS comandos: el del siguiente tick y el de la emisión "tee"
+		return b, tea.Batch(
+			block.ScheduleNextTick(b.id, b.updateInterval),
+			teeCmd,
+		)
+
+	//Es necesario hacer broadcast de la caché? En principio no.
 	case cachedDataMsg:
 		if m.BlockID() != b.id { return b, nil }
 		b.isLoading = false
@@ -253,6 +328,48 @@ func (b *ShellCommandBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
 		
 		// También usamos el nuevo planificador.
 		return b, block.ScheduleNextTick(b.id, b.updateInterval)
+
+	case block.StreamLineBatchMsg:
+			if m.BlockID() != b.id {
+				return b, nil
+			}
+			
+			// Una vez que recibimos el primer lote, consideramos que ya no está "cargando".
+			b.isLoading = false
+
+			// Para la propia vista del bloque tail_log, podemos mostrar la última línea recibida.
+			if len(m.Lines) > 0 {
+				b.parsedData = m.Lines[len(m.Lines)-1]
+			}
+			
+/*			// Ahora, creamos un comando "tee" POR CADA LÍNEA en el lote.
+			var teeCmds []tea.Cmd
+			for _, line := range m.Lines {
+				teeCmd := func(line string) tea.Cmd {
+					return func() tea.Msg {
+						return block.TeeOutputMsg{
+							SourceBlockID: b.id,
+							Output:        line,
+						}
+					}
+				}(line) // <--- ¡Importante! Se captura la variable 'line' en el closure.
+				teeCmds = append(teeCmds, teeCmd)
+			}		
+			// Devolvemos todos los comandos "tee" en un solo lote.
+			// No programamos un nuevo tick, porque la goroutine del stream sigue viva.
+			return b, tea.Batch(teeCmds...)
+*/
+			// --- Alternativa porque se satura ---
+			// Creamos UN SOLO TeeOutputMsg que contiene TODAS las líneas.
+			teeCmd := func() tea.Msg {
+				return block.TeeOutputMsg{
+					SourceBlockID: b.id,
+					Output:        m.Lines, // <-- El Output ahora es un []string
+				}
+			}
+			
+			// Devolvemos un único comando "tee".
+			return b, teeCmd
 
 	case spinner.TickMsg:
         if b.isLoading {
@@ -327,4 +444,59 @@ func (b *ShellCommandBlock) View() string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, content, " "+b.spinner.View())
 	}
 	return content
+}
+
+// listenToStream crea un comando que inicia un proceso y escucha su salida
+// línea por línea en una goroutine.
+// blocks/shell_command/shell_command.go
+
+func listenToStream(p *tea.Program, cmd *exec.Cmd, blockID string) tea.Cmd {
+	return func() tea.Msg {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil { return streamClosedMsg{blockID: blockID, err: err} }
+
+		if err := cmd.Start(); err != nil {
+			return streamClosedMsg{blockID: blockID, err: err}
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		
+		go func() {
+			// Buffer para agrupar líneas
+			var lines []string
+			// Temporizador para enviar lotes cada 100ms
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+
+			for {
+				select {
+				// Caso 1: Ha pasado el tiempo del ticker
+				case <-ticker.C:
+					if len(lines) > 0 {
+						// Si tenemos líneas acumuladas, las enviamos
+						// p.Send(block.NewStreamLineBatchMsg{blockID: blockID, lines: lines})
+						p.Send(block.NewStreamLineBatchMsg(blockID, lines))
+						// Y vaciamos el buffer
+						lines = nil
+					}
+				// Caso 2: Leemos una nueva línea del scanner
+				default:
+					if !scanner.Scan() {
+						// Si el scanner falla o termina, el proceso ha muerto.
+						// Enviamos las últimas líneas que quedaran y cerramos.
+						if len(lines) > 0 {
+							// p.Send(block.StreamLineBatchMsg{blockID: blockID, lines: lines})
+							p.Send(block.NewStreamLineBatchMsg(blockID, lines))
+						}
+						p.Send(block.NewStreamClosedMsg(blockID, cmd.Wait()))
+						return
+					}
+					// Acumulamos la línea leída en el buffer
+					lines = append(lines, scanner.Text())
+				}
+			}
+		}()
+
+		return nil
+	}
 }

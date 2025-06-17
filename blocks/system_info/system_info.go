@@ -86,7 +86,7 @@ func (b *SystemInfoBlock) Init(blockConfig map[string]interface{}, globalConfig 
 	return nil
 }
 
-func (b *SystemInfoBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
+func (b *SystemInfoBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea.Cmd) {
 	switch m := msg.(type) {
 	// Este case ahora maneja DOS tipos de trigger:
 	// 1. El TriggerUpdateMsg general del arranque.
@@ -94,7 +94,7 @@ func (b *SystemInfoBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
 	case block.TriggerUpdateMsg, block.BlockTickMsg:
 		// Para BlockTickMsg, nos aseguramos de que es para nosotros.
 		if tick, ok := m.(block.BlockTickMsg); ok {
-			if tick.TargetBlockID != b.id {
+			if tick.BlockID() != b.id {
 				return b, nil // No es para mí, lo ignoro.
 			}
 		}

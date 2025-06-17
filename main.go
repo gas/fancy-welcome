@@ -18,6 +18,7 @@ import (
 
 	"github.com/gas/fancy-welcome/blocks/shell_command"
 	"github.com/gas/fancy-welcome/blocks/system_info"
+	"github.com/gas/fancy-welcome/blocks/word_counter"
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
 	"github.com/gas/fancy-welcome/themes"
@@ -29,10 +30,12 @@ import (
 var blockFactory = map[string]func() block.Block{
 	"ShellCommand": shell_command.New,
 	"SystemInfo":   system_info.New,
+	"WordCounter":   word_counter.New,
 }
 
 
 type model struct {
+    program 	*tea.Program // <-- STREAM
 	blocks 		[]block.Block
 	width  		int
 	height 		int
@@ -129,7 +132,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			targetID := targetMsg.BlockID()
 		    for i, b := range m.blocks {
 				if b.Name() == targetID {
-					updatedBlock, cmd := b.Update(msg)
+					updatedBlock, cmd := b.Update(m.program,msg)
 		        	m.blocks[i] = updatedBlock 
 		        	cmds = append(cmds, cmd)
 		        	break // out of tha loop
@@ -139,7 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// No, es un mensaje general (como TriggerUpdateMsg o spinner.TickMsg).
 			// Lo enviamos a todos los bloques.
 			for i, b := range m.blocks {
-				updatedBlock, cmd := b.Update(msg)
+				updatedBlock, cmd := b.Update(m.program, msg) //<-- STREAM
 				m.blocks[i] = updatedBlock
 				cmds = append(cmds, cmd)
 			}	    	
@@ -268,93 +271,6 @@ func (m *model) View() string {
     return m.dashboardVP.View()
 }
 
-func (m *model) old_View() string {
-
-	if m.currentView == "expanded" {
-		// Si estamos en vista expandida, mostramos ESE viewport
-		return m.expandedVP.View()
-	}
-    
-    if m.width == 0 { return "Initializing..." }
-
-    var finalLayout []string       // Almacenará los elementos finales (columnas unidas y bloques full)
-    var leftColumnViews []string   // Vistas pendientes para la columna izquierda
-    var rightColumnViews []string  // Vistas pendientes para la columna derecha
-
-    // Función helper para procesar y limpiar las columnas pendientes.
-    processPendingColumns := func() {
-        if len(leftColumnViews) > 0 || len(rightColumnViews) > 0 {
-            leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftColumnViews...)
-            rightColumn := lipgloss.JoinVertical(lipgloss.Left, rightColumnViews...)
-            
-            // Une las columnas horizontalmente
-            joinedCols := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
-            finalLayout = append(finalLayout, joinedCols)
-
-            // Limpia los slices para la siguiente sección de columnas
-            leftColumnViews = []string{}
-            rightColumnViews = []string{}
-        }
-    }
-
-    // 1. Renderizar y agrupar vistas por posición
-    for i, b := range m.blocks {
-        blockView := b.View()
-
-    	//logging.Log.Printf("FOCUS CHECK: focusIndex=%d, blockIndex=%d, blockName=%s", m.focusIndex, i, b.Name())
-
-        // Aplicar borde y foco (como ya haces)
-	    var borderStyle lipgloss.Style
-	    if i == m.focusIndex {
-	        borderStyle = m.focusBorderStyle
-	    } else {
-	        borderStyle = m.normalBorderStyle
-	    }
-        
-        // Los bloques sin "left" o "right" se consideran "full".
-        position := b.Position() 
-
-        if position == "left" || position == "right" {
-            // Renderizamos el bloque con un ancho aproximado de la mitad de la pantalla
-            // Menos espacio para padding y bordes.
-            blockWidth := (m.width / 2) - 4 
-            renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
-
-            if position == "left" {
-                leftColumnViews = append(leftColumnViews, renderedBlock)
-            } else {
-                rightColumnViews = append(rightColumnViews, renderedBlock)
-            }
-        } else { // El bloque es "full-width"
-            // 1. Procesa cualquier columna que estuviera pendiente antes de este bloque.
-            processPendingColumns()
-
-            // 2. Renderiza el bloque de ancho completo y añádelo al layout final.
-            blockWidth := m.width - 2 // Ancho completo menos bordes
-            renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
-            finalLayout = append(finalLayout, renderedBlock)
-        }
-
-    }
-
-    // 3. Procesa cualquier columna que haya quedado al final del bucle.
-    processPendingColumns()
-
-    // Antes devolvíamos todo a lipgloss pero necesitamos el viewport
-    // 4A. Unía todos los elementos del layout final verticalmente.
-    // return lipgloss.JoinVertical(lipgloss.Left, finalLayout...)
-
-    // 4B. Al viewport
-    // 1. Unimos todos los elementos del layout final en un solo string.
-    fullLayout := lipgloss.JoinVertical(lipgloss.Left, finalLayout...)
-
-    // 2. Establecemos ese string como el contenido de nuestro viewport.
-    m.dashboardVP.SetContent(fullLayout)
-
-    // 3. Devolvemos la vista del viewport, que se encargará del scroll.
-    return m.dashboardVP.View()
-}
-
 // --- La nueva lógica principal en main() ---
 
 func main() {
@@ -385,6 +301,7 @@ func main() {
 
 // runInteractiveMode contiene toda la lógica de Bubble Tea que teníamos antes.
 func runTuiMode(refreshTarget string) {
+
 	//config
 	cfg, err := config.LoadConfig()
 	if err != nil { log.Fatalf("Error cargando config: %v", err) }
@@ -459,6 +376,7 @@ func runTuiMode(refreshTarget string) {
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	m.program = p // <-- STREAM
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error ejecutando el programa: %v\n", err)
 		os.Exit(1)
@@ -506,6 +424,9 @@ func runTtyMode(refreshTarget string) {
 		if runMode == "tui" { 
 			continue 
 		}
+	    if isStreaming, ok := blockConfig["streaming"].(bool); ok && isStreaming {
+	        continue
+	    }
 
 		blockType, _ := blockConfig["type"].(string)
 		if factory, ok := blockFactory[blockType]; ok {
@@ -524,7 +445,7 @@ func runTtyMode(refreshTarget string) {
 	for _, b := range activeBlocks {
 
 		// Paso 3.1: Iniciar la actualización.
-		updatedBlock, cmd := b.Update(block.TriggerUpdateMsg{})
+		updatedBlock, cmd := b.Update(nil, block.TriggerUpdateMsg{})
 
 		// Paso 3.2: Ejecutar el comando si es necesario.
 		if cmd != nil {
@@ -532,7 +453,7 @@ func runTtyMode(refreshTarget string) {
 			msg := cmd()
 			
 			// Paso 3.3: Finalizar la actualización.
-			updatedBlock, _ = updatedBlock.Update(msg)
+			updatedBlock, _ = updatedBlock.Update(nil, msg)
 		}
 
 		// Paso 4: Imprimir la vista.
