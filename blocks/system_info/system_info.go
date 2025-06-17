@@ -21,8 +21,13 @@ type SystemInfoBlock struct {
 	info  			string
 	updateInterval 	time.Duration
     position     	string
-	blockConfig    map[string]interface{}
-	isLoading      bool
+	rendererName   	string // <-- AÑADE ESTE CAMPO
+	blockConfig    	map[string]interface{}
+	isLoading      	bool
+}
+
+func (b *SystemInfoBlock) RendererName() string {
+    return "raw_text" // O el que corresponda
 }
 
 // Message for when info is fetched

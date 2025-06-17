@@ -211,6 +211,95 @@ func (m *model) View() string {
     // 1. Renderizar y agrupar vistas por posición
     for i, b := range m.blocks {
         blockView := b.View()
+    	var renderedBlock string // Declaramos la variable que contendrá el resultado final
+    	//logging.Log.Printf("FOCUS CHECK: focusIndex=%d, blockIndex=%d, blockName=%s", m.focusIndex, i, b.Name())
+
+	    // --- LÓGICA DE RENDERIZADO CONDICIONAL ---
+	    if b.RendererName() == "preformatted_text" {
+	        // Si es pre-formateado, usamos la vista cruda, sin bordes ni estilos.
+	        renderedBlock = blockView
+	    	logging.Log.Printf("PREFORMATTED: blockIndex=%d, blockName=%s", i, b.Name())
+
+	    } else {
+	        // Para todos los demás, aplicamos el borde y el estilo de foco.
+	        var borderStyle lipgloss.Style
+	        if i == m.focusIndex {
+	            borderStyle = m.focusBorderStyle
+	        } else {
+	            borderStyle = m.normalBorderStyle
+	        }
+
+	        position := b.Position() 
+	        if position == "left" || position == "right" {
+	            blockWidth := (m.width / 2) - 4 
+	            renderedBlock = borderStyle.Width(blockWidth).Render(blockView)
+	        } else {
+	            blockWidth := m.width - 2
+	            renderedBlock = borderStyle.Width(blockWidth).Render(blockView)
+	        }
+	    }
+
+	    // El resto de la lógica para añadir a las columnas se mantiene igual,
+	    // pero ahora usa la variable 'renderedBlock'.
+	    position := b.Position()
+	    if position == "left" || position == "right" {
+	         if position == "left" {
+	            leftColumnViews = append(leftColumnViews, renderedBlock)
+	        } else {
+	            rightColumnViews = append(rightColumnViews, renderedBlock)
+	        }
+	    } else {
+	         processPendingColumns()
+	         finalLayout = append(finalLayout, renderedBlock)
+	    }
+
+    }
+
+    // 3. Procesa cualquier columna que haya quedado al final del bucle.
+    processPendingColumns()
+
+    // 1. Unimos todos los elementos del layout final en un solo string.
+    fullLayout := lipgloss.JoinVertical(lipgloss.Left, finalLayout...)
+
+    // 2. Establecemos ese string como el contenido de nuestro viewport.
+    m.dashboardVP.SetContent(fullLayout)
+
+    // 3. Devolvemos la vista del viewport, que se encargará del scroll.
+    return m.dashboardVP.View()
+}
+
+func (m *model) old_View() string {
+
+	if m.currentView == "expanded" {
+		// Si estamos en vista expandida, mostramos ESE viewport
+		return m.expandedVP.View()
+	}
+    
+    if m.width == 0 { return "Initializing..." }
+
+    var finalLayout []string       // Almacenará los elementos finales (columnas unidas y bloques full)
+    var leftColumnViews []string   // Vistas pendientes para la columna izquierda
+    var rightColumnViews []string  // Vistas pendientes para la columna derecha
+
+    // Función helper para procesar y limpiar las columnas pendientes.
+    processPendingColumns := func() {
+        if len(leftColumnViews) > 0 || len(rightColumnViews) > 0 {
+            leftColumn := lipgloss.JoinVertical(lipgloss.Left, leftColumnViews...)
+            rightColumn := lipgloss.JoinVertical(lipgloss.Left, rightColumnViews...)
+            
+            // Une las columnas horizontalmente
+            joinedCols := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
+            finalLayout = append(finalLayout, joinedCols)
+
+            // Limpia los slices para la siguiente sección de columnas
+            leftColumnViews = []string{}
+            rightColumnViews = []string{}
+        }
+    }
+
+    // 1. Renderizar y agrupar vistas por posición
+    for i, b := range m.blocks {
+        blockView := b.View()
 
     	//logging.Log.Printf("FOCUS CHECK: focusIndex=%d, blockIndex=%d, blockName=%s", m.focusIndex, i, b.Name())
 
@@ -221,11 +310,7 @@ func (m *model) View() string {
 	    } else {
 	        borderStyle = m.normalBorderStyle
 	    }
-
-		//linea clave para asignar el borde correcto
-		//renderedBlock := borderStyle.Width(blockWidth).Render(blockView)
         
-        // Asumimos una nueva propiedad `Position` en la interfaz Block.
         // Los bloques sin "left" o "right" se consideran "full".
         position := b.Position() 
 
@@ -269,7 +354,6 @@ func (m *model) View() string {
     // 3. Devolvemos la vista del viewport, que se encargará del scroll.
     return m.dashboardVP.View()
 }
-
 
 // --- La nueva lógica principal en main() ---
 

@@ -88,9 +88,10 @@ type ShellCommandBlock struct {
 	//nextRunTime 	time.Time
     isLoading 		bool
     spinner   		spinner.Model
-    position     string
+    position     	string
     width 			int
-    blockConfig    map[string]interface{}
+	rendererName   	string 
+	blockConfig    	map[string]interface{}
 }
 
 // CORRECCIÓN 2: Añadir 'blockID' al mensaje para saber a quién pertenece.
@@ -180,8 +181,11 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 
 	parserName, _ := blockConfig["parser"].(string)
 	b.parser = registeredParsers[parserName]
+	
 	rendererName, _ := blockConfig["renderer"].(string)
 	b.renderer = registeredRenderers[rendererName]
+    b.rendererName = rendererName // para pasarselo a main
+
 	indicatorStyle, _ := blockConfig["loading_indicator"].(string)
 	if indicatorStyle == "" {
 		indicatorStyle = "spinner"
@@ -197,6 +201,9 @@ func (b *ShellCommandBlock) Init(blockConfig map[string]interface{}, globalConfi
 	return nil
 }
 
+func (b *ShellCommandBlock) RendererName() string {
+    return b.rendererName 
+}
 
 // En shell_command.go Y en system_info.go
 func (b *ShellCommandBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
@@ -294,6 +301,14 @@ func (b *ShellCommandBlock) fetchDataCmd() tea.Cmd {
 
 
 func (b *ShellCommandBlock) View() string {
+	//preformateado?? lo manejamos en main
+/*	if _, ok := b.renderer.(*renderers.PreformattedTextRenderer); ok {
+		if text, ok := b.parsedData.(string); ok && text != "" {
+			logging.Log.Printf("[%s] Preformateado: %s", b.Name(), b.id)
+			return text
+		}
+	}*/
+
 	var content string
 
 	if b.currentError != nil {

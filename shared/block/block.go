@@ -12,6 +12,11 @@ import (
 
 type TriggerUpdateMsg struct{}
 
+type TeeOutputMsg struct {
+	SourceBlockID string
+	Output      interface{}
+}
+
 // BlockTickMsg es el mensaje que se enviará periódicamente a un bloque específico.
 type BlockTickMsg struct {
 	TargetBlockID string
@@ -28,6 +33,7 @@ type Block interface {
 	Name() string
 	// helper de posición
     Position() string
+	RendererName() string
 }
 
 // ScheduleNextUpdate devuelve un comando que envía un TriggerUpdateMsg después de un intervalo.
