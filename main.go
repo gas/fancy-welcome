@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
+	//"strings"
 	"path/filepath"
 	//"time"
 
 	//"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
+    "github.com/charmbracelet/bubbles/textinput"	
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
@@ -19,6 +20,7 @@ import (
 	"github.com/gas/fancy-welcome/blocks/shell_command"
 	"github.com/gas/fancy-welcome/blocks/system_info"
 	"github.com/gas/fancy-welcome/blocks/word_counter"
+    "github.com/gas/fancy-welcome/blocks/filter"
 	"github.com/gas/fancy-welcome/config"
 	"github.com/gas/fancy-welcome/shared/block"
 	"github.com/gas/fancy-welcome/themes"
@@ -31,6 +33,7 @@ var blockFactory = map[string]func() block.Block{
 	"ShellCommand": shell_command.New,
 	"SystemInfo":   system_info.New,
 	"WordCounter":   word_counter.New,
+	"Filter":   filter.New,
 }
 
 
@@ -41,12 +44,13 @@ type model struct {
 	height 		int
     currentView string // "dashboard" o "viewport"
     viewport    viewport.Model
-    //activeBlock 		block.Block // Para saber qué bloque está activo, ya no se usa	
     focusIndex  		int    // Índice del bloque que tiene el foco	
 	dashboardVP 		viewport.Model // Para la vista principal
 	expandedVP  		viewport.Model  // Para la vista de un solo bloque
 	normalBorderStyle 	lipgloss.Style
 	focusBorderStyle  	lipgloss.Style
+	mode      	string  	// "dashboard", "creating_filter", etc.
+	textInput 	textinput.Model  
 }
 
 
@@ -66,6 +70,57 @@ func (m *model) Init() tea.Cmd {
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     logging.Log.Printf("--- MAIN UPDATE RECEIVED MSG TYPE: %T ---", msg)
+
+	// Si estamos en modo de entrada de texto, solo nos interesa el textInput.
+	if m.mode == "creating_filter" {
+		var cmd tea.Cmd
+		
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.Type {
+			case tea.KeyEnter:
+				// 1. Obtenemos el texto introducido.
+				filterQuery := m.textInput.Value()
+				
+				// 2. Obtenemos el bloque "padre" que tenía el foco.
+				parentBlock := m.blocks[m.focusIndex]
+				parentName := parentBlock.Name()
+
+				// 3. Creamos la configuración para el nuevo bloque.
+				newBlockName := fmt.Sprintf("%s_filter_%d", parentName, len(m.blocks)+1) // Usamos len+1 para un ID único
+				newBlockConfig := map[string]interface{}{
+					"name":       newBlockName,
+					"type":       "Filter",
+					"listens_to": parentName,
+					"filter":     filterQuery, // Pasamos la query del usuario
+				}
+
+				// 4. Creamos e inicializamos el nuevo bloque.
+				factory := blockFactory[newBlockConfig["type"].(string)]
+				newBlock := factory()
+				newBlock.Init(newBlockConfig, config.GeneralConfig{}, &themes.Theme{})
+
+				// 5. Lo insertamos en el slice justo después de su padre.
+				insertionIndex := m.focusIndex + 1
+				m.blocks = append(m.blocks[:insertionIndex], append([]block.Block{newBlock}, m.blocks[insertionIndex:]...)...)
+	
+				// 6. Volvemos al modo normal y reseteamos el input.
+				m.mode = "dashboard"
+				m.textInput.Reset()
+				return m, nil
+
+			case tea.KeyEsc:
+				// El usuario ha cancelado.
+				m.mode = "dashboard"
+				m.textInput.Reset()
+				return m, nil
+			}
+		}
+
+		// Pasamos el mensaje al textInput para que se actualice (el usuario está escribiendo).
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
 
     var cmds []tea.Cmd
     var cmd tea.Cmd
@@ -131,8 +186,46 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case "tab": // El Tab sigue para cambiar el foco visual (borde)
             m.focusIndex = (m.focusIndex + 1) % len(m.blocks)
             return m, nil 
-        }
+		case "a":
+			m.mode = "creating_filter"
+			m.textInput.Focus() // Activamos el cursor en el campo de texto
+			return m, textinput.Blink // Devuelve el comando para que el cursor parpadee
+/*
+			// 1. Identificar el bloque "padre" usando el foco actual.
+			//    Añadimos un chequeo de seguridad por si acaso.
+			if m.focusIndex < 0 || m.focusIndex >= len(m.blocks) {
+				return m, nil // No hacer nada si el foco es inválido
+			}
+			parentBlock := m.blocks[m.focusIndex]
+			parentName := parentBlock.Name()
 
+			// 1. Creamos la configuración para el nuevo bloque en memoria.
+			newBlockName := fmt.Sprintf("%s_filter_%d", parentName, len(m.blocks))
+			newBlockConfig := map[string]interface{}{
+				"name":       newBlockName,
+				"type":       "Filter",
+				"listens_to": parentName,
+				"filter":     "TICK", // Un filtro de ejemplo
+			}
+
+			// 2. Usamos nuestra factory para crear la instancia.
+			if factory, ok := blockFactory[newBlockConfig["type"].(string)]; ok {
+				newBlock := factory()
+				// 3. Inicializamos el bloque.
+				// Pasamos un cfg y theme vacíos porque este bloque no los necesita mucho.
+				newBlock.Init(newBlockConfig, config.GeneralConfig{}, &themes.Theme{})
+
+				// 4. Insertamos el nuevo bloque en la posición correcta.
+				//    Esta es la forma idiomática de insertar en un slice en Go.
+				insertionIndex := m.focusIndex + 1
+				m.blocks = append(m.blocks[:insertionIndex], append([]block.Block{newBlock}, m.blocks[insertionIndex:]...)...)
+				
+				// Opcional: movemos el foco directamente al nuevo bloque creado.
+				m.focusIndex = insertionIndex
+			}
+			
+			return m, nil // Forzamos un redibujado*/
+        }
     
 
     default:
@@ -163,37 +256,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// renderDashboardContent era una función auxiliar que generaba el string
-// completo de todos los bloques, listo para ser puesto en el viewport. 
-// ya no hace falta, todo va en el View.
-func (m *model) renderDashboardContent() string {
-    if m.width == 0 {
-        return "Initializing..."
-    }
-
-    var renderedBlocks []string
-    for i, b := range m.blocks {
-        blockView := b.View()
-
-        // Estilo para el borde del bloque
-        borderStyle := lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("240")) // Color de borde por defecto
-
-    		logging.Log.Printf("--- nombre de bloque: %T ---Indice de foco", b.Name())
-
-        // Si el bloque tiene el foco, cambia el color del borde
-        if i == m.focusIndex {
-            borderStyle = borderStyle.BorderForeground(lipgloss.Color("12")) // Color de borde para el foco
-        }
-
-        // Aplicamos el ancho al estilo y luego renderizamos el contenido DENTRO del borde.
-        renderedBlocks = append(renderedBlocks, borderStyle.Width(m.width - 2).Render(blockView))
-    }
-    return strings.Join(renderedBlocks, "\n")
-}
 
 func (m *model) View() string {
+	// Primero, obtenemos la vista del dashboard como siempre.
+	dashboardView := m.renderDashboard() // Nueva función helper
+
+	// Si estamos en modo de creación de filtro...
+	if m.mode == "creating_filter" {
+		// ...dibujamos el dashboard y, debajo, el campo de texto.
+		return lipgloss.JoinVertical(lipgloss.Left,
+			dashboardView,
+			"\n\nAñadir filtro (Enter para aceptar, Esc para cancelar):",
+			m.textInput.View(),
+		)
+	}
+
+	// Si no, simplemente devolvemos la vista del dashboard.
+	return dashboardView
+}
+
+func (m *model) renderDashboard() string {
 
 	if m.currentView == "expanded" {
 		// Si estamos en vista expandida, mostramos ESE viewport
@@ -227,6 +309,30 @@ func (m *model) View() string {
         blockView := b.View()
     	var renderedBlock string // Declaramos la variable que contendrá el resultado final
     	//logging.Log.Printf("FOCUS CHECK: focusIndex=%d, blockIndex=%d, blockName=%s", m.focusIndex, i, b.Name())
+
+/*    	// ETIQUETA 'a: Add Filter' en el borde inferior 
+		var finalBlockView string // Un string para el contenido final del bloque (vista + tag)
+
+		if i == m.focusIndex {
+		    // Creamos el tag solo para el bloque con foco
+		    // lipgloss.Place es perfecto para alinear el texto
+		    tag := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#FF5F87")).Render(" a: add filter ")
+		    
+		    // Obtenemos el ancho del bloque para alinear el tag a la derecha
+		    blockWidth := (m.width / 2) - 4 // Asumiendo columna (ajustar si es full-width)
+		    alignedTag := lipgloss.PlaceHorizontal(blockWidth, lipgloss.Right, tag)
+
+		    // Unimos la vista del bloque y el tag verticalmente
+		    finalBlockView = lipgloss.JoinVertical(lipgloss.Left, blockView, alignedTag)
+		} else {
+		    // Si el bloque no tiene foco, su vista final es solo su contenido
+		    finalBlockView = blockView
+		}
+		// Ahora, el borde se aplica al conjunto de 'finalBlockView'
+		var borderStyle lipgloss.Style
+		// ... (la lógica if/else para seleccionar el estilo del borde se mantiene igual)
+		renderedBlock := borderStyle.Width(blockWidth).Render(finalBlockView)		
+*/
 
 	    // --- LÓGICA DE RENDERIZADO CONDICIONAL ---
 	    if b.RendererName() == "preformatted_text" {
@@ -376,6 +482,12 @@ func runTuiMode(refreshTarget string) {
 	expVP := viewport.New(100, 20)
 	expVP.Style = baseStyle
 	dashVP.Style = baseStyle
+
+	// Creamos la instancia del textInput
+	ti := textinput.New()
+	ti.Placeholder = "Término a filtrar (ej: -i -v ERROR)"
+	ti.Focus() // Lo activamos por defecto, aunque solo lo mostraremos cuando sea necesario
+
 	m := &model{
 		blocks:      activeBlocks,
 		currentView: "dashboard",
@@ -384,6 +496,8 @@ func runTuiMode(refreshTarget string) {
 		focusIndex:  0, // Inicia el foco en el primer bloque
 		normalBorderStyle: normalBorderStyle,
 		focusBorderStyle:  focusBorderStyle,
+		mode:      "dashboard", // El modo inicial es el dashboard
+		textInput: ti,		
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())

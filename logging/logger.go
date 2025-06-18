@@ -21,6 +21,7 @@ func Init() (*os.File, error) {
 
 	// Creamos una nueva instancia de logger que escribirá en nuestro archivo.
 	Log = log.New(logFile, "fancy-welcome: ", log.LstdFlags|log.Lshortfile)
+	Log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	Log.Println("Logging system initialized.")
 
 	return logFile, nil
