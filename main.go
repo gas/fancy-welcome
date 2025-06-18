@@ -103,10 +103,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			//if len(m.blocks) > 0 {
 			m.currentView = "expanded" // antes "viewport"
 			focusedBlock := m.blocks[m.focusIndex]
-			m.expandedVP.SetContent(focusedBlock.View())
+
+			// --- LÓGICA INTELIGENTE ---
+			// ¿El bloque enfocado tiene una vista expandida?
+			if expander, ok := focusedBlock.(block.Expander); ok {
+				// Sí, la tiene. Usamos su vista expandida.
+				m.expandedVP.SetContent(expander.ExpandedView())
+			} else {
+				// No, no la tiene. Usamos su vista normal como fallback.
+				m.expandedVP.SetContent(focusedBlock.View())
+			}
+
 			m.expandedVP.GotoTop()
 			//}
 			return m, nil
+			
         // Ahora, las flechas arriba/abajo controlan el desplazamiento del viewport principal.
         case "up", "k":
             m.dashboardVP, cmd = m.dashboardVP.Update(msg) // Pasa el mensaje al viewport principal

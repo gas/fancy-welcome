@@ -19,10 +19,20 @@ type WordCounterBlock struct {
     listensTo   string // A qué bloque escucha
     countString string // Qué palabra o texto buscar
     count       int    // Su estado interno
+    matchingLines []string // <-- AÑADIMOS ESTE CAMPO
     position    string
 }
 
 func New() block.Block { return &WordCounterBlock{} }
+
+// Método de block implementado aquí para manejarlo
+// ExpandedView devuelve el contenido detallado para la vista expandida.
+func (b *WordCounterBlock) ExpandedView() string {
+    // Unimos todas las líneas capturadas con un salto de línea.
+    // Añadimos un título para que sea más claro.
+    header := fmt.Sprintf("Líneas de '%s' que contienen '%s':\n\n", b.listensTo, b.countString)
+    return header + strings.Join(b.matchingLines, "\n")
+}
 
 // --- MÉTODOS REQUERIDOS POR LA INTERFAZ ---
 
@@ -66,6 +76,7 @@ func (b *WordCounterBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea
                 if text, ok := m.Output.(string); ok {
                     if strings.Contains(text, b.countString) {
                         b.count++
+                        b.matchingLines = append(b.matchingLines, data)
                     }
                 }
             case []string:
@@ -73,6 +84,7 @@ func (b *WordCounterBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea
                 for _, line := range data {
                     if strings.Contains(line, b.countString) {
                         b.count++
+                        b.matchingLines = append(b.matchingLines, line)
                     }
                 }
             }

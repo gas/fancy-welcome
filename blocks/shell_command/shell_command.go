@@ -474,7 +474,7 @@ func listenToStream(p *tea.Program, cmd *exec.Cmd, blockID string) tea.Cmd {
 			// Buffer para agrupar líneas
 			var lines []string
 			// Temporizador para enviar lotes cada 100ms
-			ticker := time.NewTicker(100 * time.Millisecond)
+			ticker := time.NewTicker(10 * time.Millisecond)
 			defer ticker.Stop()
 
 			for {

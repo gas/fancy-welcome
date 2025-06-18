@@ -57,6 +57,10 @@ type TargetedMsg interface {
 	BlockID() string
 }
 
+type Expander interface {
+	ExpandedView() string
+}
+
 // NewStreamLineBatchMsg es un constructor público para crear el mensaje.
 func NewStreamLineBatchMsg(id string, lines []string) tea.Msg {
 	return StreamLineBatchMsg{
