@@ -263,31 +263,13 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
 			b.isLoading = true
 			// el Batch que muestra vivos los spinners
 			return b, tea.Batch(
-				b.fetchDataCmd(), // El comando para cargar los datos
+				b.fetchDataCmd(p), // El comando para cargar los datos
 				b.spinner.Tick,   // El comando para INICIAR la animación del spinner
 			)
 		}
 
     // --- GESTIÓN DE MENSAJES DE STREAM ---
-/*
-    case streamLineMsg:
-        if m.blockID != b.id { return b, nil }
-        b.isLoading = false // Dejamos de mostrar el spinner una vez que llega la primera línea
 
-        // La línea recibida es nuestro nuevo "dato parseado"
-        b.parsedData = m.line
-
-        // Creamos el comando para emitir la línea con "tee"
-        teeCmd := func() tea.Msg {
-            return block.TeeOutputMsg{
-                SourceBlockID: b.id,
-                Output:        m.line,
-            }
-        }
-        // Devolvemos el comando "tee". No necesitamos programar un Tick aquí,
-        // ya que el stream sigue vivo y enviando datos.
-        return b, teeCmd
-*/
     case streamClosedMsg:
         if m.blockID != b.id { return b, nil }
         b.isLoading = false
@@ -342,7 +324,7 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
 				b.parsedData = m.Lines[len(m.Lines)-1]
 			}
 			
-/*			// Ahora, creamos un comando "tee" POR CADA LÍNEA en el lote.
+/*			// Aquí creábamos un comando "tee" POR CADA LÍNEA en el lote.
 			var teeCmds []tea.Cmd
 			for _, line := range m.Lines {
 				teeCmd := func(line string) tea.Cmd {
@@ -359,7 +341,7 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
 			// No programamos un nuevo tick, porque la goroutine del stream sigue viva.
 			return b, tea.Batch(teeCmds...)
 */
-			// --- Alternativa porque se satura ---
+			// --- Mejor alternativa porque se saturaba ---
 			// Creamos UN SOLO TeeOutputMsg que contiene TODAS las líneas.
 			teeCmd := func() tea.Msg {
 				return block.TeeOutputMsg{
@@ -381,7 +363,7 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
 }
 
 // fetchDataCmd es un método helper que devuelve el comando para la carga de datos.
-func (b *ShellCommandBlock) fetchDataCmd() tea.Cmd {
+func (b *ShellCommandBlock) OLD_fetchDataCmd() tea.Cmd {
 	return func() tea.Msg {
 		var output []byte
 		var err error
@@ -415,17 +397,44 @@ func (b *ShellCommandBlock) fetchDataCmd() tea.Cmd {
 	}
 }
 
+// fetchDataCmd ahora es asíncrono y no bloquea.
+func (b *ShellCommandBlock) fetchDataCmd(p *tea.Program) tea.Cmd {
+	return func() tea.Msg {
+		// Lanzamos el trabajo pesado en una goroutine.
+		go func() {
+			var output []byte
+			var err error
+
+			if b.command != "" {
+				cmd := exec.Command("sh", "-c", b.command)
+				// CombinedOutput sigue siendo bloqueante, pero ahora dentro de la goroutine.
+				output, err = cmd.CombinedOutput()
+				if err != nil {
+					// Cuando termina (con error), enviamos el resultado al programa.
+					p.Send(freshDataMsg{blockID: b.id, err: err})
+					return
+				}
+			}
+			
+			// Parseamos la salida.
+			parsedData, err := b.parser.Parse(string(output))
+			if err != nil {
+				p.Send(freshDataMsg{blockID: b.id, err: err})
+				return
+			}
+			
+			// Cuando termina (con éxito), enviamos el resultado al programa.
+			p.Send(freshDataMsg{blockID: b.id, data: parsedData})
+		}()
+
+		// La función principal devuelve 'nil' inmediatamente,
+		// sin bloquear el bucle de Bubble Tea. La goroutine queda trabajando.
+		return nil
+	}
+}
 
 
 func (b *ShellCommandBlock) View() string {
-	//preformateado?? lo manejamos en main
-/*	if _, ok := b.renderer.(*renderers.PreformattedTextRenderer); ok {
-		if text, ok := b.parsedData.(string); ok && text != "" {
-			logging.Log.Printf("[%s] Preformateado: %s", b.Name(), b.id)
-			return text
-		}
-	}*/
-
 	var content string
 
 	if b.currentError != nil {
