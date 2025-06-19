@@ -78,7 +78,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.Type {
-			case tea.KeyEnter:
+			case tea.KeyEnter: //procesamos creating_filter input
 				// 1. Obtenemos el texto introducido.
 				filterQuery := m.textInput.Value()
 				
@@ -186,45 +186,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case "tab": // El Tab sigue para cambiar el foco visual (borde)
             m.focusIndex = (m.focusIndex + 1) % len(m.blocks)
             return m, nil 
-		case "a":
+		case "a": // entramos en modo creating_filter 
 			m.mode = "creating_filter"
 			m.textInput.Focus() // Activamos el cursor en el campo de texto
 			return m, textinput.Blink // Devuelve el comando para que el cursor parpadee
-/*
-			// 1. Identificar el bloque "padre" usando el foco actual.
-			//    Añadimos un chequeo de seguridad por si acaso.
-			if m.focusIndex < 0 || m.focusIndex >= len(m.blocks) {
-				return m, nil // No hacer nada si el foco es inválido
-			}
-			parentBlock := m.blocks[m.focusIndex]
-			parentName := parentBlock.Name()
 
-			// 1. Creamos la configuración para el nuevo bloque en memoria.
-			newBlockName := fmt.Sprintf("%s_filter_%d", parentName, len(m.blocks))
-			newBlockConfig := map[string]interface{}{
-				"name":       newBlockName,
-				"type":       "Filter",
-				"listens_to": parentName,
-				"filter":     "TICK", // Un filtro de ejemplo
-			}
-
-			// 2. Usamos nuestra factory para crear la instancia.
-			if factory, ok := blockFactory[newBlockConfig["type"].(string)]; ok {
-				newBlock := factory()
-				// 3. Inicializamos el bloque.
-				// Pasamos un cfg y theme vacíos porque este bloque no los necesita mucho.
-				newBlock.Init(newBlockConfig, config.GeneralConfig{}, &themes.Theme{})
-
-				// 4. Insertamos el nuevo bloque en la posición correcta.
-				//    Esta es la forma idiomática de insertar en un slice en Go.
-				insertionIndex := m.focusIndex + 1
-				m.blocks = append(m.blocks[:insertionIndex], append([]block.Block{newBlock}, m.blocks[insertionIndex:]...)...)
-				
-				// Opcional: movemos el foco directamente al nuevo bloque creado.
-				m.focusIndex = insertionIndex
-			}
-			
-			return m, nil // Forzamos un redibujado*/
         }
     
 
