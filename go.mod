@@ -1,8 +1,8 @@
 module github.com/gas/fancy-welcome
 
-go 1.23.0
+go 1.23.10
 
-toolchain go1.23.10
+replace github.com/gas/fancy-effects => ./effects
 
 require (
 	github.com/charmbracelet/bubbles v0.21.0
