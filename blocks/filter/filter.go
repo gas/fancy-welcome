@@ -25,7 +25,7 @@ func (b *FilterBlock) Init(blockConfig map[string]interface{}, globalConfig conf
 }
 
 // Por ahora, el Update no hace nada más que escuchar.
-func (b *FilterBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea.Cmd) {
+func (b *FilterBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
 	// Aquí iría la lógica para procesar TeeOutputMsg
 	return b, nil
 }

@@ -2,12 +2,29 @@
 package main
 
 import (
+	//"flag"
+	//"fmt"
 	"log"
 	"os"
+	//"path/filepath"
+
+	//"github.com/charmbracelet/bubbles/viewport"
+    //"github.com/charmbracelet/bubbles/textinput"	
+	//"github.com/charmbracelet/bubbletea"
+	//"github.com/charmbracelet/lipgloss"
+	//"github.com/mattn/go-isatty"
+	"github.com/urfave/cli/v2"
+
+	//"github.com/gas/fancy-welcome/blocks/shell_command"
+	//"github.com/gas/fancy-welcome/blocks/system_info"
+	//"github.com/gas/fancy-welcome/blocks/word_counter"
+    //"github.com/gas/fancy-welcome/blocks/filter"
+	//"github.com/gas/fancy-welcome/config"
+	//"github.com/gas/fancy-welcome/shared/block"
+	//"github.com/gas/fancy-welcome/themes"
 
 	"github.com/gas/fancy-welcome/logging"
-	"github.com/gas/fancy-welcome/modes" // Aún no existe, lo crearemos ahora
-	"github.com/urfave/cli/v2"
+	"github.com/gas/fancy-welcome/modes" 
 )
 
 func main() {

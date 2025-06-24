@@ -93,7 +93,8 @@ type ShellCommandBlock struct {
     width 			int
 	rendererName   	string 
     isStreaming    	bool // <-- STREAM 
-	blockConfig    	map[string]interface{}
+    program      	*tea.Program // <-- ¡NUEVO CAMPO! Guardará el puntero.
+   	blockConfig    	map[string]interface{}
 }
 
 // Añadido 'blockID' al mensaje para saber a quién pertenece.
@@ -120,6 +121,10 @@ type streamClosedMsg struct {
 }
 func (m streamClosedMsg) BlockID() string { return m.blockID }
 
+// SetProgram guarda la referencia al programa para uso en el streaming.
+func (b *ShellCommandBlock) SetProgram(p *tea.Program) {
+    b.program = p
+}
 
 // OTROS
 
@@ -230,7 +235,7 @@ func (b *ShellCommandBlock) RendererName() string {
 }
 
 // En shell_command.go Y en system_info.go
-func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea.Cmd) {
+func (b *ShellCommandBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
     //logging.Log.Printf("SC Update: [%s] received msg: %T", b.id, msg)
 
     var cmd tea.Cmd
@@ -257,13 +262,13 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
             b.isLoading = true // Mostramos el spinner mientras se conecta
             cmd := exec.Command("sh", "-c", b.command)
             // Devolvemos un nuevo tipo de comando que escucha el stream
-            return b, listenToStream(p, cmd, b.id)
+			return b, listenToStream(b.program, cmd, b.id)
         } else {
 			// COMANDO NORMAL
 			b.isLoading = true
 			// el Batch que muestra vivos los spinners
 			return b, tea.Batch(
-				b.fetchDataCmd(p), // El comando para cargar los datos
+				b.fetchDataCmd(), // El comando para cargar los datos
 				b.spinner.Tick,   // El comando para INICIAR la animación del spinner
 			)
 		}
@@ -324,24 +329,6 @@ func (b *ShellCommandBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, te
 				b.parsedData = m.Lines[len(m.Lines)-1]
 			}
 			
-/*			// Aquí creábamos un comando "tee" POR CADA LÍNEA en el lote.
-			var teeCmds []tea.Cmd
-			for _, line := range m.Lines {
-				teeCmd := func(line string) tea.Cmd {
-					return func() tea.Msg {
-						return block.TeeOutputMsg{
-							SourceBlockID: b.id,
-							Output:        line,
-						}
-					}
-				}(line) // <--- ¡Importante! Se captura la variable 'line' en el closure.
-				teeCmds = append(teeCmds, teeCmd)
-			}		
-			// Devolvemos todos los comandos "tee" en un solo lote.
-			// No programamos un nuevo tick, porque la goroutine del stream sigue viva.
-			return b, tea.Batch(teeCmds...)
-*/
-			// --- Mejor alternativa porque se saturaba ---
 			// Creamos UN SOLO TeeOutputMsg que contiene TODAS las líneas.
 			teeCmd := func() tea.Msg {
 				return block.TeeOutputMsg{
@@ -397,8 +384,37 @@ func (b *ShellCommandBlock) OLD_fetchDataCmd() tea.Cmd {
 	}
 }
 
-// fetchDataCmd ahora es asíncrono y no bloquea.
-func (b *ShellCommandBlock) fetchDataCmd(p *tea.Program) tea.Cmd {
+// fetchDataCmd si no necesita p*program
+func (b *ShellCommandBlock) fetchDataCmd() tea.Cmd {
+	return func() tea.Msg {
+		// Lanzamos el trabajo pesado en una goroutine.
+
+		var output []byte
+		var err error
+
+		if b.command != "" {
+			cmd := exec.Command("sh", "-c", b.command)
+			// CombinedOutput sigue siendo bloqueante, pero ahora dentro de la goroutine.
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				// Cuando termina (con error), enviamos el resultado al programa.
+				return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló la ejecución: %w", err)}
+			}
+		}
+		
+		// Parseamos la salida.
+		parsedData, err := b.parser.Parse(string(output))
+		if err != nil {
+			return freshDataMsg{blockID: b.id, err: fmt.Errorf("falló el parseo: %w", err)}
+		}
+		
+		// Cuando termina (con éxito), enviamos el resultado al programa.
+		return freshDataMsg{blockID: b.id, data: parsedData}	
+	}
+}
+
+// fetchDataCmd antes era asíncrono para que no bloqueara.
+func (b *ShellCommandBlock) FORMER_fetchDataCmd(p *tea.Program) tea.Cmd {
 	return func() tea.Msg {
 		// Lanzamos el trabajo pesado en una goroutine.
 		go func() {

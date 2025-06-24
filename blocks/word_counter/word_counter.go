@@ -64,7 +64,7 @@ func (b *WordCounterBlock) Init(blockConfig map[string]interface{}, globalConfig
     return nil
 }
 
-func (b *WordCounterBlock) Update(p *tea.Program, msg tea.Msg) (block.Block, tea.Cmd) {
+func (b *WordCounterBlock) Update(msg tea.Msg) (block.Block, tea.Cmd) {
     switch m := msg.(type) {
     case block.TeeOutputMsg:
         // Tu lógica, que es perfecta, se mantiene.

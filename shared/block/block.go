@@ -20,11 +20,17 @@ type TeeOutputMsg struct {
 // STREAM
 // StreamLineBatchMsg transporta un lote de líneas de un comando en modo streaming.
 type StreamLineBatchMsg struct {
-	blockID string
-	Lines   []string
+	blockID 	string
+	Lines   	[]string
 }
 // Hacemos que cumpla la interfaz para ser un mensaje dirigido.
 func (m StreamLineBatchMsg) BlockID() string { return m.blockID }
+
+// Streamer es una interfaz que pueden implementar los bloques que necesitan
+// una referencia al programa para enviar mensajes de forma continua (streaming).
+type Streamer interface {
+	SetProgram(p *tea.Program)
+}
 
 // BlockTickMsg es el mensaje que se enviará periódicamente a un bloque específico.
 type BlockTickMsg struct {
@@ -37,7 +43,7 @@ func (m BlockTickMsg) BlockID() string { return m.targetBlockID }
 type Block interface {
 	Init(blockConfig map[string]interface{}, globalConfig config.GeneralConfig, theme *themes.Theme) error
 	// El nuevo Update recibe el mensaje y devuelve el bloque actualizado y un comando.
-	Update(p *tea.Program, msg tea.Msg) (Block, tea.Cmd) //<--STREAM
+	Update(msg tea.Msg) (Block, tea.Cmd) //<--STREAM sin p
 	View() string
 	Name() string
 	// helper de posición
